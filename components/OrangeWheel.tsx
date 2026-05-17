@@ -50,12 +50,60 @@ export default function OrangeWheel({
   const idleFrameRef = useRef<number | null>(null);
   const rotationRef = useRef(0);
 
-  // Fast/winner spin
+  // Must be declared before the spin useEffect that references it
+  const segments = useMemo(() => {
+    if (players.length === 0) return [];
+    let cumAngle = 0;
+    return players.map((player) => {
+      const angle = (player.percentage / 100) * 360;
+      const seg = {
+        ...player,
+        startAngle: cumAngle,
+        endAngle: cumAngle + angle,
+        angle,
+      };
+      cumAngle += angle;
+      return seg;
+    });
+  }, [players]);
+
+  // Fast/winner spin — lands the winner's segment under the top pointer
   useEffect(() => {
     if (isSpinning) {
       if (idleFrameRef.current) cancelAnimationFrame(idleFrameRef.current);
       const startRot = rotationRef.current;
-      const totalSpin = 720 + Math.random() * 360;
+
+      // Find winner segment mid-angle so we can spin it to 0° (top pointer)
+      let targetAngle = 0;
+      if (winnerWallet && segments.length > 0) {
+        const winnerSeg = segments.find((s) => s.wallet === winnerWallet);
+        if (winnerSeg) {
+          // Mid-angle of the winner's slice in the un-rotated wheel
+          const midAngle = winnerSeg.startAngle + winnerSeg.angle / 2;
+          // We need the wheel rotated so that midAngle sits at 0° (top).
+          // After applying `rotation`, the on-screen angle of a segment point is:
+          //   screenAngle = segmentAngle + rotation
+          // We want screenAngle ≡ 0 (mod 360), so:
+          //   rotation = -midAngle  (mod 360)
+          targetAngle = (((-midAngle) % 360) + 360) % 360;
+        }
+      }
+
+      // Add at least 5 full spins (1800°) for drama, landing exactly on targetAngle
+      const currentNormalized = ((startRot % 360) + 360) % 360;
+      let delta = targetAngle - currentNormalized;
+      if (delta < 0) delta += 360;
+      // Small random jitter within the winner segment (±30% of segment angle) for visual variety
+      if (winnerWallet && segments.length > 0) {
+        const winnerSeg = segments.find((s) => s.wallet === winnerWallet);
+        if (winnerSeg) {
+          const jitterRange = winnerSeg.angle * 0.3;
+          const jitter = (Math.random() - 0.5) * jitterRange;
+          delta += jitter;
+        }
+      }
+      const totalSpin = 1800 + delta; // 5 full rotations + exact landing
+
       const startTime = Date.now();
       const duration = 5000;
 
@@ -75,7 +123,7 @@ export default function OrangeWheel({
         if (spinRef.current) clearTimeout(spinRef.current);
       };
     }
-  }, [isSpinning]);
+  }, [isSpinning, winnerWallet, segments]);
 
   // Idle slow spin while bets are open
   useEffect(() => {
@@ -100,21 +148,6 @@ export default function OrangeWheel({
     }
   }, [isIdleSpinning, isSpinning]);
 
-  const segments = useMemo(() => {
-    if (players.length === 0) return [];
-    let cumAngle = 0;
-    return players.map((player) => {
-      const angle = (player.percentage / 100) * 360;
-      const seg = {
-        ...player,
-        startAngle: cumAngle,
-        endAngle: cumAngle + angle,
-        angle,
-      };
-      cumAngle += angle;
-      return seg;
-    });
-  }, [players]);
 
   const lamportsToSol = (l: number) => (l / 1_000_000_000).toFixed(3);
   const isEmpty = players.length === 0;

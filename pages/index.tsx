@@ -451,7 +451,7 @@ export default function Home() {
             transition: 'all 0.3s ease', overflow: 'hidden', flexShrink: 0,
             borderRight: chatOpen ? '1px solid var(--border-color)' : 'none',
           }}>
-            <Chat socket={socket} currentWallet={wallet} currentDisplayName={displayName} isConnected={connected} />
+            <Chat socket={socket} currentWallet={wallet} currentDisplayName={displayName} isConnected={connected} isMod={wallet === '9QeT88EePX6w7DsTWe5Tpx9s5go6QfxrUtpxtFeznfxi'} />
           </div>
 
           {/* ── CENTER ── */}

@@ -26,6 +26,7 @@ interface ChatProps {
   currentWallet: string | null;
   currentDisplayName: string;
   isConnected: boolean;
+  isMod?: boolean;
 }
 
 const COLORS = [
@@ -51,13 +52,15 @@ function getLevelBg(level: number): string {
   return 'linear-gradient(135deg, #2a2a2a, #444)';
 }
 
-export default function Chat({ socket, currentWallet, currentDisplayName, isConnected }: ChatProps) {
+export default function Chat({ socket, currentWallet, currentDisplayName, isConnected, isMod = false }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [cooldown, setCooldown] = useState(false);
   const [cooldownSecs, setCooldownSecs] = useState(0);
   const [avatarCache, setAvatarCache] = useState<Record<string, string | null>>({});
   const [playerCount, setPlayerCount] = useState<number>(0);
+  const [contextMenu, setContextMenu] = useState<{ msgId: string; targetWallet: string; x: number; y: number } | null>(null);
+  const [mutedWallets, setMutedWallets] = useState<Set<string>>(new Set());
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -70,6 +73,7 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
       setAvatarCache(prev => ({ ...prev, ...cache }));
     };
     const onMessage = (msg: ChatMessage) => {
+      if (mutedWallets.has(msg.wallet)) return; // silently drop muted users
       if (msg.avatar !== undefined) setAvatarCache(prev => ({ ...prev, [msg.wallet]: msg.avatar ?? null }));
       setMessages(prev => {
         const filtered = prev.filter(m => {
@@ -94,11 +98,20 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
       }, 1000);
     };
     const onPlayerCount = (count: number) => setPlayerCount(count);
+    const onMutedUser = ({ targetWallet }: { targetWallet: string }) => {
+      setMutedWallets(prev => new Set([...prev, targetWallet]));
+      setMessages(prev => prev.filter(m => m.wallet !== targetWallet));
+    };
+    const onMessageDeleted = ({ messageId }: { messageId: string }) => {
+      setMessages(prev => prev.filter(m => m.id !== messageId));
+    };
     socket.on('chat_history', onHistory);
     socket.on('chat_message', onMessage);
     socket.on('avatar_updated', onAvatarUpdated);
     socket.on('chat_cooldown', onCooldown);
     socket.on('player_count', onPlayerCount);
+    socket.on('muted_user', onMutedUser);
+    socket.on('message_deleted', onMessageDeleted);
     socket.emit('get_chat_history');
     return () => {
       socket.off('chat_history', onHistory);
@@ -106,6 +119,8 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
       socket.off('avatar_updated', onAvatarUpdated);
       socket.off('chat_cooldown', onCooldown);
       socket.off('player_count', onPlayerCount);
+      socket.off('muted_user', onMutedUser);
+      socket.off('message_deleted', onMessageDeleted);
     };
   }, [socket]);
 
@@ -137,6 +152,18 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
     socket.emit('send_chat', { wallet: currentWallet, displayName, message: trimmed });
   }, [input, currentWallet, currentDisplayName, socket, cooldown]);
 
+  const handleModMute = useCallback((targetWallet: string) => {
+    if (!socket || !currentWallet) return;
+    socket.emit('mod_mute_user', { wallet: currentWallet, targetWallet });
+    setContextMenu(null);
+  }, [socket, currentWallet]);
+
+  const handleModDelete = useCallback((messageId: string) => {
+    if (!socket || !currentWallet) return;
+    socket.emit('mod_delete_message', { wallet: currentWallet, messageId });
+    setContextMenu(null);
+  }, [socket, currentWallet]);
+
   const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
@@ -152,7 +179,10 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
     : 'Say something...';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--chat-bg)' }}>
+    <div
+      style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--chat-bg)' }}
+      onClick={() => setContextMenu(null)}
+    >
 
       {/* Header */}
       <div style={{
@@ -192,9 +222,14 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
                 background: isOwn ? 'rgba(255,140,0,0.04)' : 'transparent',
                 opacity: isOptimistic ? 0.6 : 1,
                 transition: 'background 0.1s',
+                position: 'relative',
               }}
               onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
               onMouseLeave={e => (e.currentTarget.style.background = isOwn ? 'rgba(255,140,0,0.04)' : 'transparent')}
+              onContextMenu={isMod && !isOwn ? (e) => {
+                e.preventDefault();
+                setContextMenu({ msgId: msg.id, targetWallet: msg.wallet, x: e.clientX, y: e.clientY });
+              } : undefined}
             >
               {/* Level badge */}
               <div
@@ -292,6 +327,52 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
           </div>
         )}
       </div>
+      {/* Mod context menu */}
+      {isMod && contextMenu && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            top: contextMenu.y,
+            left: contextMenu.x,
+            zIndex: 9999,
+            background: '#1a0a00',
+            border: '1px solid rgba(139,92,246,0.5)',
+            borderRadius: '10px',
+            padding: '6px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
+            minWidth: '160px',
+          }}
+        >
+          <div style={{
+            fontSize: '9px', color: '#a78bfa', fontFamily: 'var(--font-display)',
+            fontWeight: 800, letterSpacing: '0.08em', padding: '4px 8px 6px',
+            borderBottom: '1px solid rgba(139,92,246,0.2)', marginBottom: '4px',
+          }}>⚡ MOD ACTIONS</div>
+          <button
+            onClick={() => handleModDelete(contextMenu.msgId)}
+            style={{
+              display: 'block', width: '100%', textAlign: 'left',
+              background: 'transparent', border: 'none', color: '#f87171',
+              fontSize: '12px', padding: '7px 10px', borderRadius: '6px',
+              cursor: 'pointer', fontFamily: 'var(--font-display)', fontWeight: 600,
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(248,113,113,0.12)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >🗑️ Delete Message</button>
+          <button
+            onClick={() => handleModMute(contextMenu.targetWallet)}
+            style={{
+              display: 'block', width: '100%', textAlign: 'left',
+              background: 'transparent', border: 'none', color: '#fb923c',
+              fontSize: '12px', padding: '7px 10px', borderRadius: '6px',
+              cursor: 'pointer', fontFamily: 'var(--font-display)', fontWeight: 600,
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(251,146,60,0.12)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >🔇 Mute User</button>
+        </div>
+      )}
     </div>
   );
 }
