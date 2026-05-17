@@ -57,7 +57,10 @@ export default function BetPanel({ socket, displayName, roundStatus, myBet, isCo
 
     setLoading(true);
     try {
+      const balance = await connection.getBalance(publicKey);
+      const fee = 5000;
       const lamports = Math.floor(solAmount * LAMPORTS_PER_SOL);
+      if (lamports + fee > balance) { setError('Insufficient balance to cover bet + network fee'); setLoading(false); return; }
       const houseWalletPk = new PublicKey(HOUSE_WALLET);
 
       const transaction = new Transaction().add(

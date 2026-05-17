@@ -165,20 +165,24 @@ export default function Home() {
     setBetError(''); setBetTx('');
     if (!HOUSE_WALLET) { setBetError('House wallet not configured.'); return; }
     const sol = parseFloat(betAmount);
-    if (isNaN(sol) || sol < 0.001) { setBetError('Minimum bet is 0.001 SOL'); return; }
+    if (isNaN(sol) || sol < 0.0001) { setBetError('Minimum bet is 0.0001 SOL'); return; }
     const status = round?.status || 'waiting';
     if (status === 'spinning' || status === 'ended') { setBetError('Round is closed'); return; }
     setBetLoading(true);
     try {
+	    const balance = await connection.getBalance(publicKey);
+      const fee = 5000;
       const lamports = Math.floor(sol * LAMPORTS_PER_SOL);
-      const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: publicKey, toPubkey: new PublicKey(HOUSE_WALLET), lamports }));
-      const provider = (window as any).phantom?.solana;
-      if (!provider) throw new Error('Phantom not found');
-      const { signature: sig } = await provider.signAndSendTransaction(tx);
-      const confirmation = await Promise.race([
-        connection.confirmTransaction(sig, 'confirmed'),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Transaction timed out, please try again')), 10000))
-      ]);
+      if (lamports + fee > balance) { setBetError('Insufficient balance to cover bet + network fee'); setBetLoading(false); return; }
+	    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: publicKey, toPubkey: new PublicKey(HOUSE_WALLET), lamports }));
+	    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+	    tx.recentBlockhash = blockhash;
+	    tx.feePayer = publicKey;
+	    const sig = await sendTransaction(tx, connection);
+	    const confirmation = await Promise.race([
+		    connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
+		    new Promise((_, reject) => setTimeout(() => reject(new Error('Transaction timed out, please try again')), 10000))
+	    ]);
       // If round is spinning, queue the bet for next round
       const currentStatus = round?.status;
       if (currentStatus === 'spinning') {
@@ -232,10 +236,10 @@ export default function Home() {
           padding: '0 20px', gap: '16px',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-            <span style={{ fontSize: '26px', lineHeight: 1 }}>🍊</span>
+            <span style={{ fontSize: '26px', lineHeight: 1 }}>🍓</span>
             <span style={{
               fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '18px',
-              color: 'var(--orange-bright)', letterSpacing: '-0.01em',
+              color: '#e53e3e', letterSpacing: '-0.01em',
             }}>FruitBowl<span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>.fun</span></span>
           </div>
 
@@ -248,6 +252,47 @@ export default function Home() {
               fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
               cursor: 'pointer', letterSpacing: '0.01em',
             }}>🍊 Orangepot</div>
+            <div
+              title="Coming Soon"
+              style={{
+                height: '100%', display: 'flex', alignItems: 'center',
+                padding: '0 16px',
+                borderBottom: '2px solid transparent',
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
+                cursor: 'not-allowed', letterSpacing: '0.01em',
+                opacity: 0.4, filter: 'grayscale(1)',
+                position: 'relative',
+              }}
+              onMouseEnter={e => {
+                const tip = document.getElementById('fruitflip-tip');
+                if (tip) tip.style.display = 'block';
+              }}
+              onMouseLeave={e => {
+                const tip = document.getElementById('fruitflip-tip');
+                if (tip) tip.style.display = 'none';
+              }}
+            >
+              🍓 FruitFlip
+              <span id="fruitflip-tip" style={{
+                display: 'none',
+                position: 'absolute',
+                top: '110%',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                padding: '4px 10px',
+                fontSize: '11px',
+                color: 'var(--text-primary)',
+                whiteSpace: 'nowrap',
+                zIndex: 100,
+                fontWeight: 600,
+                opacity: 1,
+                filter: 'none',
+              }}>Coming Soon</span>
+            </div>
           </nav>
 
           <div style={{ flex: 1 }} />
