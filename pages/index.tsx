@@ -57,7 +57,7 @@ interface RecentRound {
 }
 
 export default function Home() {
-  const { publicKey, sendTransaction } = useWallet();
+  const { publicKey, sendTransaction, signTransaction } = useWallet();
   const { connection } = useConnection();
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -75,6 +75,7 @@ export default function Home() {
   const [betTx, setBetTx] = useState('');
   const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [roundDisplayId, setRoundDisplayId] = useState(1);
+  const [pendingBet, setPendingBet] = useState<{wallet:string;displayName:string;amountLamports:number;txSignature:string}|null>(null);
   const prevWalletRef = useRef<string | null>(null);
   const prevRoundIdRef = useRef<string | null>(null);
   const [liveTimeLeft, setLiveTimeLeft] = useState<number>(0);
@@ -105,7 +106,7 @@ export default function Home() {
   }, [wallet]);
 
   useEffect(() => {
-    const s = io('https://casino.wsamcserver.xyz', { transports: ['websocket', 'polling'] });
+    const s = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'https://fruitbowl.fun', { transports: ['websocket', 'polling'] });
     s.on('connect', () => { setConnected(true); s.emit('get_state'); });
     s.on('disconnect', () => setConnected(false));
     s.on('round_update', (r: GameRound) => {
@@ -131,6 +132,14 @@ export default function Home() {
       setIsSpinning(false);
       setWinnerInfo(null);
       setRoundDisplayId(prev => prev + 1);
+      setPendingBet(prev => {
+        if (prev) {
+          s.emit('place_bet', prev);
+          setBetError('');
+          setBetTx('✓ Queued bet placed in new round!');
+        }
+        return null;
+      });
     });
     setSocket(s);
     return () => { s.disconnect(); };
@@ -156,20 +165,28 @@ export default function Home() {
     setBetError(''); setBetTx('');
     if (!HOUSE_WALLET) { setBetError('House wallet not configured.'); return; }
     const sol = parseFloat(betAmount);
-    if (isNaN(sol) || sol < 0.01) { setBetError('Minimum bet is 0.01 SOL'); return; }
+    if (isNaN(sol) || sol < 0.001) { setBetError('Minimum bet is 0.001 SOL'); return; }
     const status = round?.status || 'waiting';
     if (status === 'spinning' || status === 'ended') { setBetError('Round is closed'); return; }
     setBetLoading(true);
     try {
       const lamports = Math.floor(sol * LAMPORTS_PER_SOL);
       const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: publicKey, toPubkey: new PublicKey(HOUSE_WALLET), lamports }));
-      const { blockhash } = await connection.getLatestBlockhash();
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = publicKey;
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, 'confirmed');
-      setBetTx(sig);
-      socket.emit('place_bet', { wallet, displayName: displayName || wallet.slice(0, 8), amountLamports: lamports, txSignature: sig });
+      const provider = (window as any).phantom?.solana;
+      if (!provider) throw new Error('Phantom not found');
+      const { signature: sig } = await provider.signAndSendTransaction(tx);
+      const confirmation = await Promise.race([
+        connection.confirmTransaction(sig, 'confirmed'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Transaction timed out, please try again')), 10000))
+      ]);
+      // If round is spinning, queue the bet for next round
+      const currentStatus = round?.status;
+      if (currentStatus === 'spinning') {
+        setPendingBet({ wallet, displayName: displayName || wallet.slice(0, 8), amountLamports: lamports, txSignature: sig });
+        setBetError('Round is spinning — your bet is queued for the next round!');
+      } else {
+        socket.emit('place_bet', { wallet, displayName: displayName || wallet.slice(0, 8), amountLamports: lamports, txSignature: sig });
+      }
     } catch (e: any) {
       setBetError(e.message?.includes('rejected') || e.message?.includes('cancelled') ? 'Transaction cancelled' : e.message || 'Transaction failed');
     }
@@ -187,7 +204,7 @@ export default function Home() {
   const isIdleSpinning = isAcceptingBets && !isSpinning;
 
   const statCards = [
-    { label: 'Jackpot Value', value: potSol, icon: '◎', accent: true },
+    { label: 'Orangepot Value', value: potSol, icon: '◎', accent: true },
     { label: 'Your Wager', value: myBetSol, icon: '◎', accent: false },
     { label: 'Your Chance', value: myChance > 0 ? myChance.toFixed(2) + '%' : '0.00%', icon: null, accent: false },
     { label: 'Time Remaining', value: round?.status === 'active' && round.countdownEndsAt
@@ -198,7 +215,7 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>FruitBowl.fun — Solana Jackpot</title>
+        <title>FruitBowl.fun — Solana Orangepot</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
@@ -230,7 +247,7 @@ export default function Home() {
               color: 'var(--text-primary)',
               fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
               cursor: 'pointer', letterSpacing: '0.01em',
-            }}>🎯 Jackpot</div>
+            }}>🍊 Orangepot</div>
           </nav>
 
           <div style={{ flex: 1 }} />
@@ -384,9 +401,10 @@ export default function Home() {
                 </div>
 
                 {/* Input row */}
-                <div style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                   <div style={{
-                    display: 'flex', alignItems: 'center', flex: 1,
+                    display: 'flex', alignItems: 'center', flex: 1, minWidth: '140px',
+                    
                     background: 'var(--bg-secondary)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '10px', padding: '0 14px', height: '46px', gap: '10px',
@@ -414,6 +432,7 @@ export default function Home() {
                       fontSize: '13px', padding: '0 20px', whiteSpace: 'nowrap',
                       background: 'linear-gradient(135deg,#cc5500,#ff8c00)',
                       fontFamily: 'var(--font-display)', fontWeight: 700,
+                      flexShrink: 0,
                     }} />
                   ) : (
                     <button
@@ -422,8 +441,8 @@ export default function Home() {
                       className="btn-orange"
                       style={{
                         padding: '0 24px', height: '46px', fontSize: '14px',
-                        letterSpacing: '0.04em', whiteSpace: 'nowrap', flexShrink: 0,
-                        borderRadius: '10px',
+                        letterSpacing: '0.04em', whiteSpace: 'nowrap',
+                        borderRadius: '10px', flexShrink: 0,
                       }}
                     >
                       {betLoading ? '⏳ Confirming...' : !isAcceptingBets ? '🔒 Closed' : 'Place Bet'}

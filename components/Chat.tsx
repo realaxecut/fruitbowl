@@ -36,6 +36,9 @@ function shortenWallet(wallet: string): string {
 export default function Chat({ socket, currentWallet, currentDisplayName, isConnected }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [cooldown, setCooldown] = useState(false);
+  const [cooldownSecs, setCooldownSecs] = useState(0);
+  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Subscribe to socket chat events
@@ -97,6 +100,21 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
     setMessages(prev => [...prev.slice(-199), optimisticMsg]);
     setInput('');
 
+    // Start 4s cooldown
+    setCooldown(true);
+    setCooldownSecs(4);
+    let secs = 4;
+    if (cooldownRef.current) clearInterval(cooldownRef.current);
+    cooldownRef.current = setInterval(() => {
+      secs -= 1;
+      setCooldownSecs(secs);
+      if (secs <= 0) {
+        clearInterval(cooldownRef.current!);
+        setCooldown(false);
+        setCooldownSecs(0);
+      }
+    }, 1000);
+
     // Emit to server — socket.io will buffer and retry if briefly disconnected
     socket.emit('send_chat', {
       wallet: currentWallet,
@@ -120,6 +138,8 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
     ? 'Connect wallet to chat'
     : !socket
     ? 'Connecting...'
+    : cooldown
+    ? `Wait ${cooldownSecs}s...`
     : currentDisplayName
     ? `Chat as ${currentDisplayName}...`
     : 'Say something...';
@@ -218,11 +238,11 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
         />
         <button
           onClick={sendMessage}
-          disabled={!canChat || !input.trim()}
+          disabled={!canChat || !input.trim() || cooldown}
           className="btn-orange"
           style={{ padding: '8px 13px', fontSize: '14px', borderRadius: '8px', flexShrink: 0 }}
         >
-          ›
+          {cooldown ? cooldownSecs : '›'}
         </button>
       </div>
     </div>

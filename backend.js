@@ -1,3 +1,4 @@
+require('dotenv').config({ path: '/var/www/solana-casino/.env.local' });
 const { createServer } = require('http');
 const { initSocket } = require('./lib/socketServer.js');
 

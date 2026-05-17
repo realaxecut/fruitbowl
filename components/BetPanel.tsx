@@ -100,7 +100,9 @@ export default function BetPanel({ socket, displayName, roundStatus, myBet, isCo
       borderRadius: '12px',
       padding: '18px',
       position: 'relative',
-      overflow: 'hidden',
+      overflow: 'visible',
+      boxSizing: 'border-box',
+      minWidth: 0,
     }}>
       {/* Top accent */}
       <div style={{
@@ -161,7 +163,7 @@ export default function BetPanel({ socket, displayName, roundStatus, myBet, isCo
           </div>
 
           {/* Quick bets */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '6px', marginBottom: '14px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '6px', marginBottom: '14px', minWidth: 0 }}>
             {QUICK_BETS.map(amt => (
               <button
                 key={amt}
@@ -189,7 +191,7 @@ export default function BetPanel({ socket, displayName, roundStatus, myBet, isCo
             onClick={handleBet}
             disabled={loading || !isAcceptingBets || !isConnected}
             className="btn-primary"
-            style={{ width: '100%', padding: '14px', fontSize: '14px', letterSpacing: '0.04em' }}
+            style={{ width: '100%', padding: '14px', fontSize: '13px', letterSpacing: '0.02em', whiteSpace: 'normal', wordBreak: 'break-word', minHeight: '48px', lineHeight: 1.3 }}
           >
             {loading
               ? '⏳ CONFIRMING...'
