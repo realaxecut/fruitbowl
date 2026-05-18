@@ -11,6 +11,7 @@ interface WinnerOverlayProps {
   wallet: string | null;
   socket: Socket | null;
   onClose: () => void;
+  onReenterPot?: () => void;  // optional: triggers re-enter flow
 }
 
 function Confetti() {
@@ -41,11 +42,13 @@ function Confetti() {
   );
 }
 
-export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerShare, totalPot, isYou, roundId, wallet, socket, onClose }: WinnerOverlayProps) {
+export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerShare, totalPot, isYou, roundId, wallet, socket, onClose, onReenterPot }: WinnerOverlayProps) {
   const [visible, setVisible] = useState(true);
   const [claimState, setClaimState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [claimTx, setClaimTx] = useState<string | null>(null);
   const [claimError, setClaimError] = useState('');
+  const [reenterState, setReenterState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [reenterError, setReenterError] = useState('');
   // Prevent double-click: track if a claim request is in-flight
   const claimInFlight = useRef(false);
 
@@ -78,6 +81,22 @@ export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerS
     return () => { socket.off('claim_result', handler); };
   }, [socket, isYou]);
 
+  // Listen for re-enter result
+  useEffect(() => {
+    if (!socket || !isYou) return;
+    const handler = (res: { success: boolean; amountLamports?: number; error?: string }) => {
+      if (res.success) {
+        setReenterState('success');
+        setTimeout(() => { onClose(); }, 1800);
+      } else {
+        setReenterState('error');
+        setReenterError(res.error || 'Re-enter failed — try claiming instead');
+      }
+    };
+    socket.on('reenter_result', handler);
+    return () => { socket.off('reenter_result', handler); };
+  }, [socket, isYou, onClose]);
+
   const handleClaim = () => {
     // Hard guards: no double submit
     if (claimInFlight.current || claimState === 'loading' || claimState === 'success') return;
@@ -90,6 +109,18 @@ export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerS
     setClaimState('loading');
     setClaimError('');
     socket.emit('claim_payout', { wallet, roundId });
+  };
+
+  const handleReenter = () => {
+    if (reenterState === 'loading' || reenterState === 'success') return;
+    if (!socket || !wallet || !roundId) {
+      setReenterError('Not connected — please refresh and try again');
+      setReenterState('error');
+      return;
+    }
+    setReenterState('loading');
+    setReenterError('');
+    socket.emit('reenter_orangepot', { wallet, roundId });
   };
 
   if (!visible) return null;
@@ -196,32 +227,61 @@ export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerS
                     </a>
                   )}
                 </div>
-              ) : (
-                <button
-                  onClick={handleClaim}
-                  disabled={claimState === 'loading'}
-                  style={{
-                    display: 'block', width: '100%', padding: '16px',
-                    borderRadius: '12px', border: 'none', cursor: claimState === 'loading' ? 'not-allowed' : 'pointer',
-                    background: claimState === 'loading'
-                      ? 'rgba(255,255,255,0.1)'
-                      : 'linear-gradient(135deg, #10b981, #059669)',
-                    color: '#fff',
-                    fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '18px',
-                    letterSpacing: '0.04em',
-                    boxShadow: claimState === 'loading' ? 'none' : '0 0 30px rgba(16,185,129,0.5)',
-                    transition: 'all 0.2s',
-                    opacity: claimState === 'loading' ? 0.7 : 1,
-                  }}
-                >
-                  {claimState === 'loading' ? '⏳ Sending...' : `💰 Claim ${solWon} SOL`}
-                </button>
-              )}
-
-              {claimState === 'error' && (
-                <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', fontSize: '12px', color: '#f87171' }}>
-                  {claimError}
+              ) : reenterState === 'success' ? (
+                <div style={{ padding: '16px', background: 'rgba(255,140,0,0.12)', border: '1px solid rgba(255,140,0,0.4)', borderRadius: '12px' }}>
+                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px', color: 'var(--orange-bright)', marginBottom: '4px' }}>
+                    🍊 Entered the Pot!
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Your winnings are back in play...</div>
                 </div>
+              ) : (
+                <>
+                  {/* Primary: Claim SOL */}
+                  <button
+                    onClick={handleClaim}
+                    disabled={claimState === 'loading' || reenterState === 'loading'}
+                    style={{
+                      display: 'block', width: '100%', padding: '16px',
+                      borderRadius: '12px', border: 'none', cursor: (claimState === 'loading' || reenterState === 'loading') ? 'not-allowed' : 'pointer',
+                      background: claimState === 'loading'
+                        ? 'rgba(255,255,255,0.1)'
+                        : 'linear-gradient(135deg, #10b981, #059669)',
+                      color: '#fff',
+                      fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '18px',
+                      letterSpacing: '0.04em',
+                      boxShadow: claimState === 'loading' ? 'none' : '0 0 30px rgba(16,185,129,0.5)',
+                      transition: 'all 0.2s',
+                      opacity: (claimState === 'loading' || reenterState === 'loading') ? 0.7 : 1,
+                    }}
+                  >
+                    {claimState === 'loading' ? '⏳ Sending...' : `💰 Claim ${solWon} SOL`}
+                  </button>
+
+                  {/* Secondary: Re-enter Pot */}
+                  <button
+                    onClick={handleReenter}
+                    disabled={claimState === 'loading' || reenterState === 'loading'}
+                    style={{
+                      display: 'block', width: '100%', padding: '13px',
+                      borderRadius: '12px', border: '1px solid rgba(255,140,0,0.4)',
+                      cursor: (claimState === 'loading' || reenterState === 'loading') ? 'not-allowed' : 'pointer',
+                      background: reenterState === 'loading' ? 'rgba(255,140,0,0.1)' : 'rgba(255,140,0,0.08)',
+                      color: 'var(--orange-soft)',
+                      fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '14px',
+                      letterSpacing: '0.03em',
+                      transition: 'all 0.2s',
+                      opacity: (claimState === 'loading' || reenterState === 'loading') ? 0.6 : 1,
+                    }}
+                  >
+                    {reenterState === 'loading' ? '⏳ Entering...' : `🍊 Re-enter Pot (${solWon} SOL)`}
+                  </button>
+
+                  {(claimState === 'error' || reenterState === 'error') && (
+                    <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', fontSize: '12px', color: '#f87171' }}>
+                      {claimState === 'error' ? claimError : reenterError}
+                    </div>
+                  )}
+                </>
               )}
 
               <button
@@ -234,7 +294,7 @@ export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerS
                   cursor: 'pointer',
                 }}
               >
-                {claimState === 'success' ? 'Next Round →' : 'Claim Later'}
+                {claimState === 'success' || reenterState === 'success' ? 'Next Round →' : 'Claim Later'}
               </button>
             </div>
           ) : (

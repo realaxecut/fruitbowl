@@ -5,7 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { useConnection } from '@solana/wallet-adapter-react';
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
 
 const HOUSE_WALLET = process.env.NEXT_PUBLIC_HOUSE_WALLET || '';
 const HOUSE_EDGE = 0.05;
@@ -78,6 +78,16 @@ export default function FruitRoll() {
   const raceRef = useRef<number | null>(null);
   const runnersRef = useRef<FruitRunner[]>([]);
   const winnerPendingRef = useRef<string | null>(null);  // fruiid of pre-determined winner
+
+  // Claim state
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [claimId, setClaimId] = useState<string | null>(null);
+  const [claimState, setClaimState] = useState<'registering' | 'ready' | 'claiming' | 'success' | 'error' | null>(null);
+  const [claimTx, setClaimTx] = useState<string | null>(null);
+  const [claimError, setClaimError] = useState('');
+  const [unclaimedTotal, setUnclaimedTotal] = useState(0);
+  const claimInFlight = useRef(false);
+  const currentBetSigRef = useRef<string | null>(null);
 
   const selectedFruits = FRUITS.slice(0, fruitCount);
   const betLamports = Math.floor(parseFloat(betAmount || '0') * LAMPORTS_PER_SOL);
@@ -183,8 +193,22 @@ export default function FruitRoll() {
         { emoji: winnerFruit.emoji, name: winnerFruit.name, won, payout },
         ...prev.slice(0, 9),
       ]);
+      // If the player won, register the win with the server so we can do a claim
+      if (won && wallet && socket && currentBetSigRef.current && betLamports > 0) {
+        setClaimState('registering');
+        setClaimId(null);
+        setClaimTx(null);
+        setClaimError('');
+        claimInFlight.current = false;
+        socket.emit('register_fruitroll_win', {
+          wallet,
+          betTxSig: currentBetSigRef.current,
+          betLamports,
+          fruitCount,
+        });
+      }
     }
-  }, [phase, winnerFruit]);
+  }, [phase, winnerFruit, socket, wallet, betLamports, fruitCount, potentialPayout, pickedFruit]);
 
   // Subscribe to mod game lock events
   useEffect(() => {
@@ -192,9 +216,43 @@ export default function FruitRoll() {
     s.on('locked_games', (games: string[]) => {
       setIsGameLocked(games.includes('fruitroll'));
     });
+    s.on('fruitroll_win_registered', (res: { success: boolean; claimId?: string; payoutLamports?: number; error?: string; alreadyRegistered?: boolean }) => {
+      if (res.success && res.claimId) {
+        setClaimId(res.claimId);
+        setClaimState('ready');
+        // Persist locally in case page refreshes before claim
+        if (wallet) {
+          try {
+            const pending = JSON.parse(localStorage.getItem(`fr_pending_claim_${wallet}`) || '{}');
+            pending[res.claimId] = { payoutLamports: res.payoutLamports, registeredAt: Date.now() };
+            localStorage.setItem(`fr_pending_claim_${wallet}`, JSON.stringify(pending));
+          } catch {}
+        }
+      } else {
+        setClaimState('error');
+        setClaimError(res.error || 'Failed to register win — please try claiming from Settings');
+      }
+    });
+    s.on('fruitroll_claim_result', (res: { success: boolean; claimTx?: string; amount?: number; error?: string; alreadyClaimed?: boolean }) => {
+      claimInFlight.current = false;
+      if (res.success || res.alreadyClaimed) {
+        setClaimState('success');
+        setClaimTx(res.claimTx || null);
+        // Refresh unclaimed count
+        s.emit('get_unclaimed_wins', { wallet });
+      } else {
+        setClaimState('error');
+        setClaimError(res.error || 'Claim failed — please try again');
+      }
+    });
+    s.on('unclaimed_wins', (data: { items: any[]; totalLamports: number }) => {
+      setUnclaimedTotal(data.totalLamports || 0);
+    });
     s.emit('get_state');
+    if (wallet) s.emit('get_unclaimed_wins', { wallet });
+    setSocket(s);
     return () => { s.disconnect(); };
-  }, []);
+  }, [wallet]);
 
   // ── Handle Bet ──────────────────────────────────────────────────────────────
   const handleBet = async () => {
@@ -251,6 +309,9 @@ export default function FruitRoll() {
 
       setBetError('');
 
+      // Store bet sig for win registration
+      currentBetSigRef.current = sig;
+
       // Determine winner — check mod override first
       const alwaysLose = (() => { try { return localStorage.getItem('mod_fruitroll_always_lose') === 'true'; } catch { return false; } })();
       let determinedWinner: string;
@@ -289,6 +350,12 @@ export default function FruitRoll() {
     setRunners([]);
     runnersRef.current = [];
     winnerPendingRef.current = null;
+    currentBetSigRef.current = null;
+    setClaimId(null);
+    setClaimState(null);
+    setClaimTx(null);
+    setClaimError('');
+    claimInFlight.current = false;
   };
 
   // ── Track widths / layout ─────────────────────────────────────────────────
@@ -358,6 +425,31 @@ export default function FruitRoll() {
           <div style={{ flex: 1 }} />
           <WalletMultiButton />
         </header>
+
+        {/* ── UNCLAIMED WINNINGS BANNER ── */}
+        {wallet && unclaimedTotal > 0 && (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+              background: 'linear-gradient(90deg, rgba(16,185,129,0.15), rgba(16,185,129,0.08), rgba(16,185,129,0.15))',
+              borderBottom: '1px solid rgba(16,185,129,0.35)',
+              padding: '9px 20px',
+              cursor: 'default',
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: '16px' }}>💰</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: '#10b981', letterSpacing: '0.04em' }}>
+              You have <strong>{(unclaimedTotal / 1_000_000_000).toFixed(4)} SOL</strong> in unclaimed winnings —
+            </span>
+            <span
+              onClick={() => router.push('/')}
+              style={{ fontSize: '11px', color: 'rgba(16,185,129,0.7)', fontFamily: 'var(--font-display)', fontWeight: 600, textDecoration: 'underline', cursor: 'pointer' }}
+            >
+              Claim via Orangepot Settings →
+            </span>
+          </div>
+        )}
 
         {/* ── BODY ── */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -597,6 +689,67 @@ export default function FruitRoll() {
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '24px' }}>
                     {playerWon ? `${multiplier}× multiplier · 5% fee deducted` : `You picked: ${selectedFruits.find(f => f.id === pickedFruit)?.emoji} ${selectedFruits.find(f => f.id === pickedFruit)?.name}`}
                   </div>
+
+                  {/* ── Claim section (winner only) ── */}
+                  {playerWon && (
+                    <div style={{ marginBottom: '16px' }}>
+                      {claimState === 'success' ? (
+                        <div style={{ padding: '14px', background: 'rgba(72,187,120,0.12)', border: '1px solid rgba(72,187,120,0.4)', borderRadius: '12px', marginBottom: '10px' }}>
+                          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', color: '#48bb78', marginBottom: '4px' }}>
+                            ✅ Prize Sent!
+                          </div>
+                          {claimTx && (
+                            <a href={`https://explorer.solana.com/tx/${claimTx}`} target="_blank" rel="noreferrer"
+                              style={{ fontSize: '11px', color: '#48bb78', textDecoration: 'underline', fontFamily: 'Space Mono, monospace' }}>
+                              View on Explorer ↗
+                            </a>
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            if (claimInFlight.current || claimState === 'claiming' || claimState === 'registering' || !claimId || !socket || !wallet) return;
+                            claimInFlight.current = true;
+                            setClaimState('claiming');
+                            setClaimError('');
+                            socket.emit('claim_fruitroll_payout', { wallet, claimId });
+                          }}
+                          disabled={!claimId || claimState === 'claiming' || claimState === 'registering'}
+                          style={{
+                            display: 'block', width: '100%', padding: '16px',
+                            borderRadius: '12px', border: 'none',
+                            cursor: (!claimId || claimState === 'claiming' || claimState === 'registering') ? 'not-allowed' : 'pointer',
+                            background: (!claimId || claimState === 'claiming' || claimState === 'registering')
+                              ? 'rgba(255,255,255,0.08)'
+                              : 'linear-gradient(135deg,#48bb78,#38a169)',
+                            color: '#fff',
+                            fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '17px',
+                            letterSpacing: '0.04em',
+                            boxShadow: claimId && claimState === 'ready' ? '0 0 28px rgba(72,187,120,0.45)' : 'none',
+                            transition: 'all 0.2s',
+                            opacity: (!claimId || claimState === 'claiming' || claimState === 'registering') ? 0.65 : 1,
+                            marginBottom: '8px',
+                          }}
+                        >
+                          {claimState === 'registering' ? '⏳ Registering win...' :
+                           claimState === 'claiming' ? '⏳ Sending...' :
+                           claimState === 'error' ? `💰 Retry Claim` :
+                           claimId ? `💰 Claim ${(payoutAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL` :
+                           '⏳ Preparing claim...'}
+                        </button>
+                      )}
+                      {claimState === 'error' && claimError && (
+                        <div style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', fontSize: '11px', color: '#f87171', marginTop: '6px' }}>
+                          {claimError}
+                        </div>
+                      )}
+                      {!claimId && claimState !== 'registering' && claimState !== 'error' && (
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                          If claim doesn't appear, check Settings → Unclaimed Winnings
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <button onClick={resetGame} style={{
                     padding: '14px 40px', borderRadius: '12px', border: 'none',
                     background: 'linear-gradient(135deg,#cc5500,#ff8c00)',

@@ -31,6 +31,9 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
   const [fruitRollAlwaysLose, setFruitRollAlwaysLose] = useState<boolean>(() => {
     try { return localStorage.getItem('mod_fruitroll_always_lose') === 'true'; } catch { return false; }
   });
+  const [unclaimedWins, setUnclaimedWins] = useState<{id: string; game_type: string; amount: number; created_at: number; fruit_count?: number}[]>([]);
+  const [claimingId, setClaimingId] = useState<string | null>(null);
+  const [claimResults, setClaimResults] = useState<Record<string, {tx?: string; error?: string; success?: boolean}>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -118,8 +121,49 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     socket.on('profile_data', onProfile);
     socket.emit('get_profile', { wallet });
     socket.on('avatar_result', onResult);
-    return () => { socket.off('avatar_result', onResult); };
-  }, [socket]);
+
+    // Load unclaimed wins
+    socket.emit('get_unclaimed_wins', { wallet });
+    const onUnclaimed = (data: { items: any[]; totalLamports: number }) => {
+      setUnclaimedWins(data.items || []);
+    };
+    socket.on('unclaimed_wins', onUnclaimed);
+
+    // Listen for orangepot claim result (from settings)
+    const onClaimResult = (res: { success: boolean; claimTx?: string; error?: string; alreadyClaimed?: boolean }) => {
+      setClaimingId(null);
+      if (res.success || res.alreadyClaimed) {
+        // Remove from list
+        setUnclaimedWins(prev => prev.filter(w => !w.id.startsWith('settings_claiming_')));
+        socket.emit('get_unclaimed_wins', { wallet }); // refresh
+      }
+    };
+    socket.on('claim_result', onClaimResult);
+
+    // Listen for fruitroll claim result (from settings)
+    const onFruitrollClaimResult = (res: { success: boolean; claimTx?: string; error?: string; alreadyClaimed?: boolean }) => {
+      setClaimingId(prev => {
+        if (!prev) return null;
+        setClaimResults(prevResults => ({
+          ...prevResults,
+          [prev]: { success: res.success, tx: res.claimTx, error: res.error },
+        }));
+        return null;
+      });
+      if (res.success) {
+        setTimeout(() => socket.emit('get_unclaimed_wins', { wallet }), 500);
+      }
+    };
+    socket.on('fruitroll_claim_result', onFruitrollClaimResult);
+
+    return () => {
+      socket.off('avatar_result', onResult);
+      socket.off('profile_data', onProfile);
+      socket.off('unclaimed_wins', onUnclaimed);
+      socket.off('claim_result', onClaimResult);
+      socket.off('fruitroll_claim_result', onFruitrollClaimResult);
+    };
+  }, [socket, wallet]);
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -227,6 +271,74 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
               {shortWallet}
             </div>
           </div>
+
+          {/* ── Unclaimed Winnings ── */}
+          {unclaimedWins.length > 0 && (
+            <div style={{
+              background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.25)',
+              borderRadius: '12px', padding: '14px 16px', marginBottom: '24px',
+            }}>
+              <div style={{ fontSize: '10px', color: '#10b981', letterSpacing: '0.08em', marginBottom: '12px', fontFamily: 'var(--font-display)', fontWeight: 700 }}>
+                💰 UNCLAIMED WINNINGS
+              </div>
+              {unclaimedWins.map((win) => {
+                const solAmount = (win.amount / 1_000_000_000).toFixed(4);
+                const isClaimingThis = claimingId === win.id;
+                const result = claimResults[win.id];
+                return (
+                  <div key={win.id} style={{
+                    background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.2)',
+                    borderRadius: '10px', padding: '12px', marginBottom: '8px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px', color: '#10b981' }}>
+                        +{solAmount} ◎
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {win.game_type === 'fruitroll' ? '🍉 FruitRoll' : '🍊 Orangepot'}
+                        {' · '}
+                        {new Date(win.created_at).toLocaleDateString()}
+                      </div>
+                      {result?.error && (
+                        <div style={{ fontSize: '10px', color: '#f87171', marginTop: '4px' }}>{result.error}</div>
+                      )}
+                      {result?.tx && (
+                        <a href={`https://explorer.solana.com/tx/${result.tx}`} target="_blank" rel="noreferrer"
+                          style={{ fontSize: '10px', color: '#10b981', textDecoration: 'underline' }}>
+                          View tx ↗
+                        </a>
+                      )}
+                    </div>
+                    {!result?.tx && (
+                      <button
+                        onClick={() => {
+                          if (isClaimingThis || !socket) return;
+                          setClaimingId(win.id);
+                          if (win.game_type === 'fruitroll') {
+                            socket.emit('claim_fruitroll_payout', { wallet, claimId: win.id });
+                          } else {
+                            socket.emit('claim_payout', { wallet, roundId: win.id });
+                          }
+                        }}
+                        disabled={isClaimingThis || !!claimingId}
+                        style={{
+                          padding: '8px 14px', borderRadius: '8px', border: 'none', cursor: (isClaimingThis || !!claimingId) ? 'not-allowed' : 'pointer',
+                          background: isClaimingThis ? 'rgba(255,255,255,0.06)' : 'linear-gradient(135deg,#10b981,#059669)',
+                          color: isClaimingThis ? 'var(--text-muted)' : '#fff',
+                          fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px',
+                          flexShrink: 0, transition: 'all 0.2s',
+                          boxShadow: isClaimingThis ? 'none' : '0 0 12px rgba(16,185,129,0.3)',
+                        }}
+                      >
+                        {isClaimingThis ? '⏳' : '💰 Claim'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Referral code */}
           <div style={{

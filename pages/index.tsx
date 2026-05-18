@@ -85,6 +85,7 @@ export default function Home() {
   const prevRoundIdRef = useRef<string | null>(null);
   const [liveTimeLeft, setLiveTimeLeft] = useState<number>(0);
   const [lastAnimatedRoundId, setLastAnimatedRoundId] = useState<string | null>(null);
+  const [unclaimedTotal, setUnclaimedTotal] = useState<number>(0);
 
   useEffect(() => {
     const tick = () => {
@@ -158,6 +159,9 @@ export default function Home() {
     s.on('locked_games', (games: string[]) => {
       setIsGameLocked(games.includes('fruitbowl'));
     });
+    s.on('unclaimed_wins', (data: { items: any[]; totalLamports: number }) => {
+      setUnclaimedTotal(data.totalLamports || 0);
+    });
     setSocket(s);
     return () => { s.disconnect(); };
   }, []);
@@ -165,6 +169,7 @@ export default function Home() {
   useEffect(() => {
     if (!wallet || !socket || !displayName) return;
     socket.emit('register_user', { wallet, displayName });
+    socket.emit('get_unclaimed_wins', { wallet });
   }, [wallet, socket, displayName]);
 
   const handleUsernameConfirm = useCallback((name: string, referralCode?: string) => {
@@ -410,6 +415,29 @@ export default function Home() {
 
           <WalletMultiButton />
         </header>
+
+        {/* ── UNCLAIMED WINNINGS BANNER ── */}
+        {wallet && unclaimedTotal > 0 && (
+          <div
+            onClick={() => setShowSettings(true)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+              background: 'linear-gradient(90deg, rgba(16,185,129,0.15), rgba(16,185,129,0.08), rgba(16,185,129,0.15))',
+              borderBottom: '1px solid rgba(16,185,129,0.35)',
+              padding: '9px 20px',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: '16px' }}>💰</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: '#10b981', letterSpacing: '0.04em' }}>
+              You have <strong>{(unclaimedTotal / 1_000_000_000).toFixed(4)} SOL</strong> in unclaimed winnings
+            </span>
+            <span style={{ fontSize: '11px', color: 'rgba(16,185,129,0.7)', fontFamily: 'var(--font-display)', fontWeight: 600, textDecoration: 'underline' }}>
+              Claim in Settings →
+            </span>
+          </div>
+        )}
 
         {/* ── STAT BAR — rounded rectangle cards ── */}
         <div style={{
