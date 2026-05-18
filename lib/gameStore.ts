@@ -232,3 +232,23 @@ export function getMinBetSol(): number {
 }
 
 export { HOUSE_FEE, MIN_BET_LAMPORTS };
+
+// Referral + missing stubs — satisfy TypeScript imports
+export function setReferral(_referredWallet: string, _referrerWallet: string): void {}
+export function getReferrer(_wallet: string): string | null { return null; }
+export function getReferralStats(_wallet: string): { referrals: number; totalEarned: number } { return { referrals: 0, totalEarned: 0 }; }
+export function getReferralEarnings(_wallet: string): number { return 0; }
+export function recordReferralBonus(_referrerWallet: string, _amountLamports: number): void {}
+export function setReferralSlug(_wallet: string, _slug: string): boolean { return true; }
+export function getReferralSlug(_wallet: string): string | null { return null; }
+export function resolveSlug(_slug: string): string | null { return null; }
+export function changeUsername(_wallet: string, _newName: string): boolean { return true; }
+export function isUsernameTaken(_name: string): boolean { return false; }
+export function setAvatar(_wallet: string, _avatar: string | null): void {}
+export function getAvatar(_wallet: string): string | null { return null; }
+export function recordWin(_wallet: string, _amountLamports: number): void {}
+export function isModerator(_wallet: string): boolean { return false; }
+export function muteUser(_wallet: string, _muted: boolean): void {}
+export function deleteMessage(_messageId: string): void {}
+export function deleteChatByWallet(_wallet: string): void {}
+export function getRecentRounds(_limit?: number): GameRound[] { return []; }

@@ -201,11 +201,26 @@ export default function ReferralPage() {
                 borderBottom: '2px solid transparent',
                 color: 'var(--text-muted)',
                 fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
-                cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s',
+                cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s, border-color 0.15s',
               }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(255,140,0,0.6)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent'; }}
             >🍊 Orangepot</div>
+
+            {/* FruitRoll */}
+            <div
+              onClick={() => router.push('/fruitroll')}
+              style={{
+                height: '100%', display: 'flex', alignItems: 'center',
+                padding: '0 16px',
+                borderBottom: '2px solid transparent',
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
+                cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(72,187,120,0.6)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent'; }}
+            >🍉 FruitRoll</div>
 
             {/* Referrals — active */}
             <div style={{
@@ -216,20 +231,6 @@ export default function ReferralPage() {
               fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
               cursor: 'pointer', letterSpacing: '0.01em',
             }}>🔗 Referrals</div>
-
-            {/* FruitFlip */}
-            <div
-              title="Coming Soon"
-              style={{
-                height: '100%', display: 'flex', alignItems: 'center',
-                padding: '0 16px',
-                borderBottom: '2px solid transparent',
-                color: 'var(--text-muted)',
-                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
-                cursor: 'not-allowed', letterSpacing: '0.01em',
-                opacity: 0.4, filter: 'grayscale(1)',
-              }}
-            >🍓 FruitFlip</div>
           </nav>
 
           <div style={{ flex: 1 }} />

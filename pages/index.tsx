@@ -340,45 +340,26 @@ export default function Home() {
               🔗 Referrals
             </div>
             <div
-              title="Coming Soon"
+              onClick={() => router.push('/fruitroll')}
               style={{
                 height: '100%', display: 'flex', alignItems: 'center',
                 padding: '0 16px',
                 borderBottom: '2px solid transparent',
                 color: 'var(--text-muted)',
                 fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
-                cursor: 'not-allowed', letterSpacing: '0.01em',
-                opacity: 0.4, filter: 'grayscale(1)',
-                position: 'relative',
+                cursor: 'pointer', letterSpacing: '0.01em',
+                transition: 'color 0.15s, border-color 0.15s',
               }}
               onMouseEnter={e => {
-                const tip = document.getElementById('fruitflip-tip');
-                if (tip) tip.style.display = 'block';
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)';
+                (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(72,187,120,0.6)';
               }}
               onMouseLeave={e => {
-                const tip = document.getElementById('fruitflip-tip');
-                if (tip) tip.style.display = 'none';
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)';
+                (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent';
               }}
             >
-              🍓 FruitFlip
-              <span id="fruitflip-tip" style={{
-                display: 'none',
-                position: 'absolute',
-                top: '110%',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                padding: '4px 10px',
-                fontSize: '11px',
-                color: 'var(--text-primary)',
-                whiteSpace: 'nowrap',
-                zIndex: 100,
-                fontWeight: 600,
-                opacity: 1,
-                filter: 'none',
-              }}>Coming Soon</span>
+              🍉 FruitRoll
             </div>
           </nav>
 
