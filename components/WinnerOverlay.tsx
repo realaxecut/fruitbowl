@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { Socket } from 'socket.io-client';
 
 interface WinnerOverlayProps {
   winnerDisplayName: string;
@@ -6,6 +7,9 @@ interface WinnerOverlayProps {
   winnerShare: number;
   totalPot: number;
   isYou: boolean;
+  roundId: string;
+  wallet: string | null;
+  socket: Socket | null;
   onClose: () => void;
 }
 
@@ -37,12 +41,56 @@ function Confetti() {
   );
 }
 
-export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerShare, totalPot, isYou, onClose }: WinnerOverlayProps) {
+export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerShare, totalPot, isYou, roundId, wallet, socket, onClose }: WinnerOverlayProps) {
   const [visible, setVisible] = useState(true);
+  const [claimState, setClaimState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [claimTx, setClaimTx] = useState<string | null>(null);
+  const [claimError, setClaimError] = useState('');
+  // Prevent double-click: track if a claim request is in-flight
+  const claimInFlight = useRef(false);
+
+  // Auto-close only if not the winner (winner stays until they claim or manually close)
   useEffect(() => {
+    if (isYou) return;
     const t = setTimeout(() => { setVisible(false); onClose(); }, 9000);
     return () => clearTimeout(t);
-  }, [onClose]);
+  }, [onClose, isYou]);
+
+  // Listen for claim result from server
+  useEffect(() => {
+    if (!socket || !isYou) return;
+    const handler = (res: { success: boolean; claimTx?: string; amount?: number; error?: string; alreadyClaimed?: boolean }) => {
+      claimInFlight.current = false;
+      if (res.success) {
+        setClaimState('success');
+        setClaimTx(res.claimTx || null);
+      } else {
+        setClaimState('error');
+        setClaimError(res.error || 'Claim failed');
+        // If already claimed by a previous session, show success-like state
+        if (res.alreadyClaimed && res.claimTx) {
+          setClaimState('success');
+          setClaimTx(res.claimTx);
+        }
+      }
+    };
+    socket.on('claim_result', handler);
+    return () => { socket.off('claim_result', handler); };
+  }, [socket, isYou]);
+
+  const handleClaim = () => {
+    // Hard guards: no double submit
+    if (claimInFlight.current || claimState === 'loading' || claimState === 'success') return;
+    if (!socket || !wallet || !roundId) {
+      setClaimError('Not connected — please refresh and try again');
+      setClaimState('error');
+      return;
+    }
+    claimInFlight.current = true;
+    setClaimState('loading');
+    setClaimError('');
+    socket.emit('claim_payout', { wallet, roundId });
+  };
 
   if (!visible) return null;
 
@@ -51,7 +99,7 @@ export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerS
 
   return (
     <div
-      onClick={onClose}
+      onClick={isYou ? undefined : onClose}
       style={{
         position: 'fixed', inset: 0,
         background: 'rgba(0,0,0,0.88)',
@@ -129,13 +177,75 @@ export default function WinnerOverlay({ winnerDisplayName, winnerWallet, winnerS
             {winnerWallet.slice(0, 8)}...{winnerWallet.slice(-8)}
           </div>
 
-          <button
-            onClick={onClose}
-            className="btn-primary"
-            style={{ display: 'block', width: '100%', padding: '13px', fontSize: '14px' }}
-          >
-            Next Round →
-          </button>
+          {/* Claim button — only shown to the winner */}
+          {isYou ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {claimState === 'success' ? (
+                <div style={{ padding: '16px', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.4)', borderRadius: '12px' }}>
+                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px', color: '#10b981', marginBottom: '6px' }}>
+                    ✅ Prize Sent!
+                  </div>
+                  {claimTx && (
+                    <a
+                      href={`https://explorer.solana.com/tx/${claimTx}?cluster=${process.env.NEXT_PUBLIC_SOLANA_NETWORK === 'mainnet-beta' ? 'mainnet' : 'devnet'}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: '11px', color: '#10b981', textDecoration: 'underline', fontFamily: 'Space Mono, monospace' }}
+                    >
+                      View on Explorer ↗
+                    </a>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={handleClaim}
+                  disabled={claimState === 'loading'}
+                  style={{
+                    display: 'block', width: '100%', padding: '16px',
+                    borderRadius: '12px', border: 'none', cursor: claimState === 'loading' ? 'not-allowed' : 'pointer',
+                    background: claimState === 'loading'
+                      ? 'rgba(255,255,255,0.1)'
+                      : 'linear-gradient(135deg, #10b981, #059669)',
+                    color: '#fff',
+                    fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '18px',
+                    letterSpacing: '0.04em',
+                    boxShadow: claimState === 'loading' ? 'none' : '0 0 30px rgba(16,185,129,0.5)',
+                    transition: 'all 0.2s',
+                    opacity: claimState === 'loading' ? 0.7 : 1,
+                  }}
+                >
+                  {claimState === 'loading' ? '⏳ Sending...' : `💰 Claim ${solWon} SOL`}
+                </button>
+              )}
+
+              {claimState === 'error' && (
+                <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', fontSize: '12px', color: '#f87171' }}>
+                  {claimError}
+                </div>
+              )}
+
+              <button
+                onClick={onClose}
+                style={{
+                  display: 'block', width: '100%', padding: '11px',
+                  borderRadius: '10px', border: '1px solid var(--border-color)',
+                  background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)',
+                  fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                {claimState === 'success' ? 'Next Round →' : 'Claim Later'}
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onClose}
+              className="btn-primary"
+              style={{ display: 'block', width: '100%', padding: '13px', fontSize: '14px' }}
+            >
+              Next Round →
+            </button>
+          )}
         </div>
       </div>
     </div>

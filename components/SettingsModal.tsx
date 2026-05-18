@@ -27,6 +27,7 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
   const [refMsg, setRefMsg] = useState('');
   const [clearChatConfirm, setClearChatConfirm] = useState(false);
   const [clearChatMsg, setClearChatMsg] = useState('');
+  const [lockedGames, setLockedGames] = useState<string[]>([]);
   const [fruitRollAlwaysLose, setFruitRollAlwaysLose] = useState<boolean>(() => {
     try { return localStorage.getItem('mod_fruitroll_always_lose') === 'true'; } catch { return false; }
   });
@@ -143,6 +144,25 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     setClearChatMsg('✓ Chat cleared');
     setTimeout(() => setClearChatMsg(''), 3000);
   };
+
+  const toggleGameLock = (gameType: string) => {
+    if (!socket) return;
+    const isLocked = lockedGames.includes(gameType);
+    if (isLocked) {
+      socket.emit('mod_unlock_game', { wallet, gameType });
+    } else {
+      socket.emit('mod_lock_game', { wallet, gameType });
+    }
+  };
+
+  // Sync locked games state from server
+  useEffect(() => {
+    if (!socket) return;
+    const onLockedGames = (games: string[]) => setLockedGames(games);
+    socket.on('locked_games', onLockedGames);
+    socket.emit('get_state');
+    return () => { socket.off('locked_games', onLockedGames); };
+  }, [socket]);
 
   const toggleFruitRollAlwaysLose = () => {
     const next = !fruitRollAlwaysLose;
@@ -453,6 +473,43 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
                 ⚠️ ACTIVE — FruitRoll players cannot win
               </div>
             )}
+
+            <div style={{ height: '1px', background: 'rgba(239,68,68,0.15)', margin: '14px 0' }} />
+
+            {/* Game Lock Controls */}
+            <div style={{ marginBottom: '14px' }}>
+              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: 'var(--text-primary)', marginBottom: '10px' }}>
+                🔒 Lock / Unlock Games
+              </div>
+              {(['fruitbowl', 'fruitroll'] as const).map((game) => {
+                const isLocked = lockedGames.includes(game);
+                return (
+                  <div key={game} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: '11px', color: isLocked ? '#f87171' : 'var(--text-primary)' }}>
+                        {game === 'fruitbowl' ? '🍊 Fruitbowl Wheel' : '🎰 FruitRoll Slots'}
+                      </div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                        {isLocked ? '🔴 Locked — no new bets accepted' : '🟢 Open — accepting bets'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => toggleGameLock(game)}
+                      style={{
+                        padding: '6px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                        background: isLocked ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                        color: isLocked ? '#10b981' : '#f87171',
+                        fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px',
+                        transition: 'all 0.2s', whiteSpace: 'nowrap', flexShrink: 0,
+                        boxShadow: isLocked ? '0 0 8px rgba(16,185,129,0.3)' : 'none',
+                      }}
+                    >
+                      {isLocked ? '🔓 Unlock' : '🔒 Lock'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
 
             <div style={{ height: '1px', background: 'rgba(239,68,68,0.15)', margin: '14px 0' }} />
 

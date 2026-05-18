@@ -41,6 +41,7 @@ interface GameRound {
 }
 
 interface WinnerInfo {
+  roundId: string;
   winnerWallet: string;
   winnerDisplayName: string;
   winnerShare: number;
@@ -79,6 +80,7 @@ export default function Home() {
   const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [roundDisplayId, setRoundDisplayId] = useState(1);
   const [pendingBet, setPendingBet] = useState<{wallet:string;displayName:string;amountLamports:number;txSignature:string}|null>(null);
+  const [isGameLocked, setIsGameLocked] = useState(false);
   const prevWalletRef = useRef<string | null>(null);
   const prevRoundIdRef = useRef<string | null>(null);
   const [liveTimeLeft, setLiveTimeLeft] = useState<number>(0);
@@ -152,6 +154,9 @@ export default function Home() {
         }
         return null;
       });
+    });
+    s.on('locked_games', (games: string[]) => {
+      setIsGameLocked(games.includes('fruitbowl'));
     });
     setSocket(s);
     return () => { s.disconnect(); };
@@ -254,7 +259,7 @@ export default function Home() {
         setPendingBet({ wallet, displayName: displayName || wallet.slice(0, 8), amountLamports: lamports, txSignature: sig });
         setBetError('Round is spinning — your bet is queued for the next round!');
       } else {
-        socket.emit('place_bet', { wallet, displayName: displayName || wallet.slice(0, 8), amountLamports: lamports, txSignature: sig });
+        socket.emit('place_bet', { wallet, displayName: displayName || wallet.slice(0, 8), amountLamports: lamports, txSignature: sig, gameType: 'fruitbowl' });
       }
     } catch (e: any) {
       setBetError(e.message?.includes('rejected') || e.message?.includes('cancelled') ? 'Transaction cancelled' : e.message || 'Transaction failed');
@@ -267,7 +272,7 @@ export default function Home() {
   const myChance = myPlayer?.percentage || 0;
   const potSol = round ? (round.totalPot / 1_000_000_000).toFixed(3) : '0.000';
   const myBetSol = (myBet / 1_000_000_000).toFixed(3);
-  const isAcceptingBets = (round?.status === 'waiting' || round?.status === 'active');
+  const isAcceptingBets = (round?.status === 'waiting' || round?.status === 'active') && !isGameLocked;
 
   // Wheel slow-spins whenever bets are open, fast-spins during actual spin
   const isIdleSpinning = isAcceptingBets && !isSpinning;
@@ -558,10 +563,16 @@ export default function Home() {
                         borderRadius: '10px', flexShrink: 0,
                       }}
                     >
-                      {betLoading ? '⏳ Confirming...' : !isAcceptingBets ? '🔒 Closed' : 'Place Bet'}
+                      {betLoading ? '⏳ Confirming...' : isGameLocked ? '🔒 Locked' : !isAcceptingBets ? '🔒 Closed' : 'Place Bet'}
                     </button>
                   )}
                 </div>
+
+                {isGameLocked && (
+                  <div style={{ margin: '0 18px 12px', padding: '10px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '8px', fontSize: '12px', color: '#f87171', fontFamily: 'var(--font-display)', fontWeight: 700, textAlign: 'center', letterSpacing: '0.04em' }}>
+                    🔒 THIS GAME HAS BEEN LOCKED BY A MODERATOR
+                  </div>
+                )}
 
                 {betError && (
                   <div style={{ margin: '0 18px 12px', padding: '8px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', fontSize: '12px', color: '#f87171' }}>
@@ -713,6 +724,9 @@ export default function Home() {
           winnerShare={winnerInfo.winnerShare}
           totalPot={winnerInfo.totalPot}
           isYou={winnerInfo.winnerWallet === wallet}
+          roundId={winnerInfo.roundId}
+          wallet={wallet}
+          socket={socket}
           onClose={() => { setShowWinner(false); setWinnerInfo(null); }}
         />
       )}

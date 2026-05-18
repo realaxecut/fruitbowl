@@ -5,6 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { useConnection } from '@solana/wallet-adapter-react';
+import { io } from 'socket.io-client';
 
 const HOUSE_WALLET = process.env.NEXT_PUBLIC_HOUSE_WALLET || '';
 const HOUSE_EDGE = 0.05;
@@ -73,6 +74,7 @@ export default function FruitRoll() {
   const [playerWon, setPlayerWon] = useState(false);
   const [payoutAmount, setPayoutAmount] = useState(0);
   const [recentResults, setRecentResults] = useState<{ emoji: string; name: string; won: boolean; payout: number }[]>([]);
+  const [isGameLocked, setIsGameLocked] = useState(false);
   const raceRef = useRef<number | null>(null);
   const runnersRef = useRef<FruitRunner[]>([]);
   const winnerPendingRef = useRef<string | null>(null);  // fruiid of pre-determined winner
@@ -184,10 +186,21 @@ export default function FruitRoll() {
     }
   }, [phase, winnerFruit]);
 
+  // Subscribe to mod game lock events
+  useEffect(() => {
+    const s = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'https://fruitbowl.fun', { transports: ['websocket', 'polling'] });
+    s.on('locked_games', (games: string[]) => {
+      setIsGameLocked(games.includes('fruitroll'));
+    });
+    s.emit('get_state');
+    return () => { s.disconnect(); };
+  }, []);
+
   // ── Handle Bet ──────────────────────────────────────────────────────────────
   const handleBet = async () => {
     setBetError('');
     if (!wallet || !publicKey) { setBetError('Connect your wallet first.'); return; }
+    if (isGameLocked) { setBetError('This game has been locked by a moderator.'); return; }
     if (!pickedFruit) { setBetError('Pick a fruit first!'); return; }
     if (!HOUSE_WALLET) { setBetError('House wallet not configured.'); return; }
     const sol = parseFloat(betAmount);
@@ -465,24 +478,29 @@ export default function FruitRoll() {
             </div>
 
             {/* Roll button */}
+            {isGameLocked && (
+              <div style={{ marginBottom: '10px', padding: '10px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '10px', fontSize: '12px', color: '#f87171', fontFamily: 'var(--font-display)', fontWeight: 700, textAlign: 'center', letterSpacing: '0.04em' }}>
+                🔒 THIS GAME HAS BEEN LOCKED BY A MODERATOR
+              </div>
+            )}
             {phase === 'idle' ? (
               !wallet ? (
                 <WalletMultiButton style={{ width: '100%', height: '50px', borderRadius: '12px', fontSize: '14px', fontFamily: 'var(--font-display)', fontWeight: 700 }} />
               ) : (
                 <button
                   onClick={handleBet}
-                  disabled={betLoading || !pickedFruit || !betAmount}
+                  disabled={betLoading || !pickedFruit || !betAmount || isGameLocked}
                   style={{
                     width: '100%', height: '50px', borderRadius: '12px', border: 'none',
-                    background: pickedFruit ? `linear-gradient(135deg, ${selectedFruits.find(f=>f.id===pickedFruit)?.color || '#48bb78'}cc, ${selectedFruits.find(f=>f.id===pickedFruit)?.color || '#48bb78'})` : 'rgba(255,255,255,0.07)',
-                    color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px',
-                    cursor: (betLoading || !pickedFruit || !betAmount) ? 'not-allowed' : 'pointer',
-                    opacity: (!pickedFruit || !betAmount) ? 0.4 : 1,
+                    background: isGameLocked ? 'rgba(239,68,68,0.15)' : pickedFruit ? `linear-gradient(135deg, ${selectedFruits.find(f=>f.id===pickedFruit)?.color || '#48bb78'}cc, ${selectedFruits.find(f=>f.id===pickedFruit)?.color || '#48bb78'})` : 'rgba(255,255,255,0.07)',
+                    color: isGameLocked ? '#f87171' : '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px',
+                    cursor: (betLoading || !pickedFruit || !betAmount || isGameLocked) ? 'not-allowed' : 'pointer',
+                    opacity: (!pickedFruit || !betAmount || isGameLocked) ? 0.5 : 1,
                     transition: 'all 0.2s',
                     letterSpacing: '0.05em',
                   }}
                 >
-                  {betLoading ? '⏳ Confirming...' : `🎰 Roll It!`}
+                  {isGameLocked ? '🔒 Game Locked' : betLoading ? '⏳ Confirming...' : `🎰 Roll It!`}
                 </button>
               )
             ) : phase === 'result' ? (
