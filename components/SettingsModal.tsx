@@ -25,6 +25,11 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
   const [refInput, setRefInput] = useState('');
   const [refSaving, setRefSaving] = useState(false);
   const [refMsg, setRefMsg] = useState('');
+  const [clearChatConfirm, setClearChatConfirm] = useState(false);
+  const [clearChatMsg, setClearChatMsg] = useState('');
+  const [fruitRollAlwaysLose, setFruitRollAlwaysLose] = useState<boolean>(() => {
+    try { return localStorage.getItem('mod_fruitroll_always_lose') === 'true'; } catch { return false; }
+  });
   const fileRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -34,7 +39,6 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     return () => clearTimeout(t);
   }, []);
 
-  // Listen for check result from server
   useEffect(() => {
     if (!socket) return;
     const onCheckResult = (res: { available: boolean; error: string | null }) => {
@@ -48,7 +52,6 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     return () => { socket.off('username_check_result', onCheckResult); };
   }, [socket]);
 
-  // Listen for save result
   useEffect(() => {
     if (!socket) return;
     const onChangeResult = (res: { success: boolean; error?: string; user?: { displayName: string } }) => {
@@ -66,40 +69,26 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     return () => { socket.off('username_change_result', onChangeResult); };
   }, [socket, wallet, onUsernameChanged]);
 
-  // Debounced availability check — with 3s timeout fallback
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
-
     const trimmed = newName.trim();
     setSuccess('');
     if (!trimmed || trimmed === currentDisplayName || trimmed.length < 2) {
       setAvailable(null); setChecking(false); return;
     }
-
-    // If socket not connected yet, assume available
     if (!socket || !socket.connected) {
       setAvailable(true); setChecking(false); return;
     }
-
     setChecking(true); setAvailable(null);
-
-    // Safety timeout: if server doesn't reply in 3s, assume available
-    timeoutRef.current = setTimeout(() => {
-      setChecking(false);
-      setAvailable(true);
-    }, 3000);
-
+    timeoutRef.current = setTimeout(() => { setChecking(false); setAvailable(true); }, 3000);
     debounceRef.current = setTimeout(() => {
       if (!socket || !socket.connected) {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        setChecking(false);
-        setAvailable(true);
-        return;
+        setChecking(false); setAvailable(true); return;
       }
       socket.emit('check_username', { name: trimmed, wallet });
     }, 400);
-
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -146,6 +135,21 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     reader.readAsDataURL(file);
   };
 
+  const handleClearChat = () => {
+    if (!clearChatConfirm) { setClearChatConfirm(true); return; }
+    if (!socket) { setClearChatMsg('Not connected'); return; }
+    socket.emit('mod_clear_chat', { wallet });
+    setClearChatConfirm(false);
+    setClearChatMsg('✓ Chat cleared');
+    setTimeout(() => setClearChatMsg(''), 3000);
+  };
+
+  const toggleFruitRollAlwaysLose = () => {
+    const next = !fruitRollAlwaysLose;
+    setFruitRollAlwaysLose(next);
+    try { localStorage.setItem('mod_fruitroll_always_lose', String(next)); } catch {}
+  };
+
   const handleKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') handleSave(); };
   const shortWallet = wallet.slice(0, 6) + '...' + wallet.slice(-6);
   const trimmed = newName.trim();
@@ -189,7 +193,8 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
         </div>
 
         {/* Body */}
-        <div style={{ padding: '24px' }}>
+        <div style={{ padding: '24px', overflowY: 'auto', maxHeight: 'calc(90vh - 120px)' }}>
+
           {/* Wallet info */}
           <div style={{
             background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)',
@@ -393,10 +398,100 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
               color: canSave ? '#fff' : 'var(--text-muted)',
               boxShadow: canSave ? '0 4px 20px rgba(204,85,0,0.35)' : 'none',
               transition: 'all 0.2s',
+              marginBottom: '24px',
             }}
           >
             {saving ? 'Saving...' : checking ? 'Checking...' : 'Save Username'}
           </button>
+
+          {/* MOD TOOLS */}
+          <div style={{
+            background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.2)',
+            borderRadius: '12px', padding: '14px 16px',
+          }}>
+            <div style={{ fontSize: '10px', color: 'rgba(239,68,68,0.7)', letterSpacing: '0.12em', marginBottom: '14px', fontFamily: 'var(--font-display)', fontWeight: 700 }}>
+              🛡️ MOD TOOLS
+            </div>
+
+            {/* FruitRoll Always Lose toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: 'var(--text-primary)', marginBottom: '3px' }}>
+                  FruitRoll — Force Lose
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  Players can never win — always picks a different fruit
+                </div>
+              </div>
+              <div
+                onClick={toggleFruitRollAlwaysLose}
+                style={{
+                  position: 'relative', width: '44px', height: '24px', borderRadius: '12px',
+                  background: fruitRollAlwaysLose ? '#ef4444' : 'rgba(255,255,255,0.1)',
+                  border: `1px solid ${fruitRollAlwaysLose ? '#ef4444' : 'var(--border-color)'}`,
+                  cursor: 'pointer', transition: 'background 0.2s, border-color 0.2s',
+                  flexShrink: 0,
+                  boxShadow: fruitRollAlwaysLose ? '0 0 10px rgba(239,68,68,0.4)' : 'none',
+                }}
+              >
+                <div style={{
+                  position: 'absolute', top: '3px',
+                  left: fruitRollAlwaysLose ? '23px' : '3px',
+                  width: '16px', height: '16px', borderRadius: '50%',
+                  background: '#fff', transition: 'left 0.2s',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+                }} />
+              </div>
+            </div>
+
+            {fruitRollAlwaysLose && (
+              <div style={{
+                marginTop: '10px', padding: '8px 10px',
+                background: 'rgba(239,68,68,0.1)', borderRadius: '8px',
+                fontSize: '11px', color: '#f87171', fontFamily: 'var(--font-display)', fontWeight: 600,
+              }}>
+                ⚠️ ACTIVE — FruitRoll players cannot win
+              </div>
+            )}
+
+            <div style={{ height: '1px', background: 'rgba(239,68,68,0.15)', margin: '14px 0' }} />
+
+            {/* Clear Chat */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: 'var(--text-primary)', marginBottom: '3px' }}>
+                  Clear Entire Chat
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  Wipes all messages for every connected user
+                </div>
+              </div>
+              <button
+                onClick={handleClearChat}
+                style={{
+                  padding: '7px 14px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                  background: clearChatConfirm ? '#ef4444' : 'rgba(239,68,68,0.15)',
+                  color: clearChatConfirm ? '#fff' : '#f87171',
+                  fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px',
+                  transition: 'all 0.2s', whiteSpace: 'nowrap', flexShrink: 0,
+                  boxShadow: clearChatConfirm ? '0 0 12px rgba(239,68,68,0.5)' : 'none',
+                }}
+              >
+                {clearChatConfirm ? '⚠️ Confirm' : '🗑️ Clear'}
+              </button>
+            </div>
+            {clearChatMsg && (
+              <div style={{ marginTop: '8px', fontSize: '11px', color: clearChatMsg.startsWith('✓') ? '#10b981' : '#f87171', fontFamily: 'var(--font-display)', fontWeight: 600 }}>
+                {clearChatMsg}
+              </div>
+            )}
+            {clearChatConfirm && (
+              <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-muted)' }}>
+                Click again to confirm — this cannot be undone
+              </div>
+            )}
+          </div>
+
         </div>
 
         {/* Footer */}

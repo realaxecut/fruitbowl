@@ -106,6 +106,9 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
     const onMessageDeleted = ({ messageId }: { messageId: string }) => {
       setMessages(prev => prev.filter(m => m.id !== messageId));
     };
+    const onChatCleared = () => {
+      setMessages([]);
+    };
     socket.on('chat_history', onHistory);
     socket.on('chat_message', onMessage);
     socket.on('avatar_updated', onAvatarUpdated);
@@ -113,6 +116,7 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
     socket.on('player_count', onPlayerCount);
     socket.on('muted_user', onMutedUser);
     socket.on('message_deleted', onMessageDeleted);
+    socket.on('chat_cleared', onChatCleared);
     socket.emit('get_chat_history');
     return () => {
       socket.off('chat_history', onHistory);
@@ -122,6 +126,7 @@ export default function Chat({ socket, currentWallet, currentDisplayName, isConn
       socket.off('player_count', onPlayerCount);
       socket.off('muted_user', onMutedUser);
       socket.off('message_deleted', onMessageDeleted);
+      socket.off('chat_cleared', onChatCleared);
     };
   }, [socket]);
 

@@ -318,28 +318,6 @@ export default function Home() {
               cursor: 'pointer', letterSpacing: '0.01em',
             }}>🍊 Orangepot</div>
             <div
-              onClick={() => router.push('/referral')}
-              style={{
-                height: '100%', display: 'flex', alignItems: 'center',
-                padding: '0 16px',
-                borderBottom: '2px solid transparent',
-                color: 'var(--text-muted)',
-                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
-                cursor: 'pointer', letterSpacing: '0.01em',
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)';
-                (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(167,139,250,0.6)';
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)';
-                (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent';
-              }}
-            >
-              🔗 Referrals
-            </div>
-            <div
               onClick={() => router.push('/fruitroll')}
               style={{
                 height: '100%', display: 'flex', alignItems: 'center',
@@ -360,6 +338,28 @@ export default function Home() {
               }}
             >
               🍉 FruitRoll
+            </div>
+            <div
+              onClick={() => router.push('/referral')}
+              style={{
+                height: '100%', display: 'flex', alignItems: 'center',
+                padding: '0 16px',
+                borderBottom: '2px solid transparent',
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
+                cursor: 'pointer', letterSpacing: '0.01em',
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)';
+                (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(167,139,250,0.6)';
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)';
+                (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent';
+              }}
+            >
+              🔗 Referrals
             </div>
           </nav>
 

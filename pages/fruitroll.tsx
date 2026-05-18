@@ -124,9 +124,13 @@ export default function FruitRoll() {
           // If this fruit is the predetermined winner, don't throttle near finish
           const isWinner = r.id === targetWinner;
 
-          // Non-winners: slow down if too close to finish before winner crosses
-          if (!isWinner && newPos > 0.85) {
-            newSpeed *= 0.6;
+          // Non-winners: slow down aggressively and hard-cap before finish line
+          if (!isWinner) {
+            if (newPos > 0.90) {
+              newSpeed *= 0.3;
+            } else if (newPos > 0.80) {
+              newSpeed *= 0.55;
+            }
           }
 
           // Winner: slight burst in final stretch
@@ -134,7 +138,9 @@ export default function FruitRoll() {
             newSpeed *= 1.08;
           }
 
-          newPos = Math.min(newPos + newSpeed, FINISH);
+          // Hard cap: non-winners cannot cross the finish line
+          const cap = isWinner ? FINISH : 0.97;
+          newPos = Math.min(newPos + newSpeed, cap);
 
           return { ...r, pos: newPos, speed: newSpeed };
         });
@@ -232,18 +238,25 @@ export default function FruitRoll() {
 
       setBetError('');
 
-      // Determine winner using weighted random (house edge means player wins less)
-      // Fair 1/N odds but we keep 5% house edge by adjusting payout not odds
-      const winChance = 1 / fruitCount;
-      const rand = Math.random();
+      // Determine winner — check mod override first
+      const alwaysLose = (() => { try { return localStorage.getItem('mod_fruitroll_always_lose') === 'true'; } catch { return false; } })();
       let determinedWinner: string;
-      if (rand < winChance) {
-        // Player wins
-        determinedWinner = pickedFruit!;
-      } else {
-        // House wins — pick a random non-picked fruit
+      if (alwaysLose) {
+        // Mod override: always pick a non-picked fruit
         const losers = selectedFruits.filter(f => f.id !== pickedFruit);
         determinedWinner = losers[Math.floor(Math.random() * losers.length)].id;
+      } else {
+        // Fair 1/N odds but we keep 5% house edge by adjusting payout not odds
+        const winChance = 1 / fruitCount;
+        const rand = Math.random();
+        if (rand < winChance) {
+          // Player wins
+          determinedWinner = pickedFruit!;
+        } else {
+          // House wins — pick a random non-picked fruit
+          const losers = selectedFruits.filter(f => f.id !== pickedFruit);
+          determinedWinner = losers[Math.floor(Math.random() * losers.length)].id;
+        }
       }
 
       setBetLoading(false);
@@ -257,7 +270,7 @@ export default function FruitRoll() {
   const resetGame = () => {
     setPhase('idle');
     setWinnerFruit(null);
-    setPickedFruit(null);
+    // Keep pickedFruit so user's selection persists across rounds
     setPlayerWon(false);
     setPayoutAmount(0);
     setRunners([]);
@@ -526,9 +539,11 @@ export default function FruitRoll() {
               }}>
                 <div style={{
                   fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '120px',
-                  color: '#48bb78', textShadow: '0 0 60px rgba(72,187,120,0.8)',
+                  color: '#48bb78',
+                  filter: 'drop-shadow(0 0 12px rgba(72,187,120,0.95)) drop-shadow(0 0 30px rgba(72,187,120,0.7)) drop-shadow(0 0 60px rgba(72,187,120,0.4)) drop-shadow(0 0 100px rgba(72,187,120,0.15))',
                   animation: 'pulse-glow 0.5s ease-in-out infinite',
                   lineHeight: 1,
+                  background: 'transparent',
                 }}>
                   {countdown > 0 ? countdown : 'GO!'}
                 </div>
@@ -574,12 +589,61 @@ export default function FruitRoll() {
               </div>
             )}
 
-            {/* Idle state */}
-            {phase === 'idle' && runners.length === 0 && (
-              <div style={{ textAlign: 'center', opacity: 0.5 }}>
-                <div style={{ fontSize: '72px', marginBottom: '16px' }}>🏁</div>
-                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '18px', color: 'var(--text-muted)' }}>
-                  Pick a fruit and place your bet to start the race!
+            {/* Idle state — show empty tracks */}
+            {phase === 'idle' && (
+              <div style={{ width: '100%', maxWidth: '700px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', paddingRight: '2px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700 }}>START</span>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700 }}>FINISH 🏁</span>
+                </div>
+                {selectedFruits.map((fruit, idx) => {
+                  const isMyFruit = fruit.id === pickedFruit;
+                  return (
+                    <div key={fruit.id} style={{ marginBottom: idx < selectedFruits.length - 1 ? `${TRACK_GAP}px` : 0 }}>
+                      <div style={{
+                        height: `${TRACK_H}px`, borderRadius: '12px', position: 'relative',
+                        background: fruit.track,
+                        border: `1px solid ${isMyFruit ? `${fruit.color}60` : 'var(--border-color)'}`,
+                        boxShadow: isMyFruit ? `0 0 20px ${fruit.color}50, 0 0 40px ${fruit.color}20` : 'none',
+                        transition: 'box-shadow 0.3s',
+                      }}>
+                        {/* Track lane lines */}
+                        <div style={{ position: 'absolute', inset: 0, borderRadius: '12px', backgroundImage: `repeating-linear-gradient(90deg, transparent, transparent 49px, rgba(255,255,255,0.03) 49px, rgba(255,255,255,0.03) 50px)` }} />
+                        {/* Finish line */}
+                        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '3px', borderRadius: '0 12px 12px 0', background: 'rgba(255,255,255,0.15)', borderRight: '2px dashed rgba(255,255,255,0.1)' }} />
+                        {/* Player indicator */}
+                        {isMyFruit && (
+                          <div style={{
+                            position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)',
+                            fontSize: '8px', fontFamily: 'var(--font-display)', fontWeight: 700,
+                            color: fruit.color, letterSpacing: '0.08em', opacity: 0.7,
+                          }}>YOUR BET</div>
+                        )}
+                        {/* Fruit sitting at start */}
+                        <div style={{
+                          position: 'absolute',
+                          left: `${FRUIT_SIZE / 2}px`,
+                          top: '50%', transform: 'translateY(-50%)',
+                          fontSize: `${FRUIT_SIZE}px`, lineHeight: 1,
+                          filter: isMyFruit ? `drop-shadow(0 0 6px ${fruit.color})` : 'none',
+                          opacity: 0.7,
+                        }}>
+                          {fruit.emoji}
+                        </div>
+                        {/* Fruit name label */}
+                        <div style={{
+                          position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+                          fontSize: '10px', fontFamily: 'var(--font-display)', fontWeight: 700,
+                          color: 'var(--text-muted)', opacity: 0.4,
+                        }}>{fruit.name}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ marginTop: '16px', textAlign: 'center' }}>
+                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: 'var(--text-muted)', letterSpacing: '0.1em', opacity: 0.6 }}>
+                    {pickedFruit ? '🎯 Ready — place your bet and roll!' : '👈 Pick a fruit to get started'}
+                  </div>
                 </div>
               </div>
             )}
@@ -599,14 +663,18 @@ export default function FruitRoll() {
                   return (
                     <div key={runner.id} style={{ marginBottom: idx < runners.length - 1 ? `${TRACK_GAP}px` : 0 }}>
                       <div style={{
-                        height: `${TRACK_H}px`, borderRadius: '12px', position: 'relative', overflow: 'hidden',
+                        height: `${TRACK_H}px`, borderRadius: '12px', position: 'relative',
                         background: runner.track,
                         border: `1px solid ${isMyFruit ? `${runner.color}60` : 'var(--border-color)'}`,
-                        boxShadow: isMyFruit ? `0 0 16px ${runner.color}30` : 'none',
+                        boxShadow: isMyFruit
+                          ? `0 0 20px ${runner.color}50, 0 0 40px ${runner.color}20`
+                          : isWinner
+                          ? `0 0 24px ${runner.color}60, 0 0 48px ${runner.color}30`
+                          : 'none',
                         transition: 'box-shadow 0.3s',
                       }}>
                         {/* Track lane lines */}
-                        <div style={{ position: 'absolute', inset: 0, backgroundImage: `repeating-linear-gradient(90deg, transparent, transparent 49px, rgba(255,255,255,0.03) 49px, rgba(255,255,255,0.03) 50px)` }} />
+                        <div style={{ position: 'absolute', inset: 0, borderRadius: '12px', backgroundImage: `repeating-linear-gradient(90deg, transparent, transparent 49px, rgba(255,255,255,0.03) 49px, rgba(255,255,255,0.03) 50px)` }} />
 
                         {/* Finish line */}
                         <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '3px', background: 'rgba(255,255,255,0.15)', borderRight: '2px dashed rgba(255,255,255,0.1)' }} />
@@ -632,7 +700,11 @@ export default function FruitRoll() {
                           top: '50%', transform: 'translateY(-50%)',
                           fontSize: `${FRUIT_SIZE}px`, lineHeight: 1,
                           transition: phase === 'result' ? 'none' : undefined,
-                          filter: isWinner ? `drop-shadow(0 0 8px ${runner.color})` : undefined,
+                          filter: isWinner
+                            ? `drop-shadow(0 0 6px ${runner.color}) drop-shadow(0 0 12px ${runner.color}99) drop-shadow(0 0 20px ${runner.color}55)`
+                            : isMyFruit
+                            ? `drop-shadow(0 0 4px ${runner.color}cc) drop-shadow(0 0 8px ${runner.color}66)`
+                            : undefined,
                           animation: phase === 'racing' && runner.pos < 0.95 ? `fruit-bounce-${idx} 0.3s ease-in-out infinite` : undefined,
                         }}>
                           {runner.emoji}
@@ -723,6 +795,10 @@ export default function FruitRoll() {
         @keyframes fruit-bounce-3 { 0%,100%{transform:translateY(-50%) rotate(6deg)} 50%{transform:translateY(-55%) rotate(-6deg)} }
         @keyframes fruit-bounce-4 { 0%,100%{transform:translateY(-50%) rotate(-3deg)} 50%{transform:translateY(-60%) rotate(3deg)} }
         @keyframes fruit-bounce-5 { 0%,100%{transform:translateY(-50%) rotate(4deg)} 50%{transform:translateY(-57%) rotate(-4deg)} }
+        @keyframes pulse-glow {
+          0%,100% { filter: drop-shadow(0 0 12px rgba(72,187,120,0.95)) drop-shadow(0 0 30px rgba(72,187,120,0.7)) drop-shadow(0 0 60px rgba(72,187,120,0.4)) drop-shadow(0 0 100px rgba(72,187,120,0.15)); opacity: 1; }
+          50%     { filter: drop-shadow(0 0 20px rgba(72,187,120,1))    drop-shadow(0 0 50px rgba(72,187,120,0.85)) drop-shadow(0 0 90px rgba(72,187,120,0.55)) drop-shadow(0 0 140px rgba(72,187,120,0.25)); opacity: 0.9; }
+        }
       `}</style>
     </>
   );
