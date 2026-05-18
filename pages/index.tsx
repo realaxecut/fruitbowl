@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Head from 'next/head';
+import { useRouter } from 'next/router';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { io, Socket } from 'socket.io-client';
@@ -59,6 +60,7 @@ interface RecentRound {
 export default function Home() {
   const { publicKey, sendTransaction, signTransaction } = useWallet();
   const { connection } = useConnection();
+  const router = useRouter();
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [round, setRound] = useState<GameRound | null>(null);
@@ -102,10 +104,14 @@ export default function Home() {
       const stored = localStorage.getItem(`username_${wallet}`);
       if (stored) { setDisplayName(stored); }
       else { setShowUsernameModal(true); }
-    }
+      // Auto-register referral if ?ref= param is present
+      const refParam = router.query.ref;
+      if (refParam && typeof refParam === 'string' && refParam !== wallet && socket) {
+        socket.emit('register_referral', { referredWallet: wallet, referrerWallet: refParam });
+      }    }
     if (!wallet) { setShowUsernameModal(false); }
     prevWalletRef.current = wallet;
-  }, [wallet]);
+  }, [wallet, socket, router.query.ref]);
 
   useEffect(() => {
     const s = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'https://fruitbowl.fun', { transports: ['websocket', 'polling'] });
@@ -346,6 +352,28 @@ export default function Home() {
                 opacity: 1,
                 filter: 'none',
               }}>Coming Soon</span>
+            </div>
+            <div
+              onClick={() => router.push('/referral')}
+              style={{
+                height: '100%', display: 'flex', alignItems: 'center',
+                padding: '0 16px',
+                borderBottom: '2px solid transparent',
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
+                cursor: 'pointer', letterSpacing: '0.01em',
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)';
+                (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(167,139,250,0.6)';
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)';
+                (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent';
+              }}
+            >
+              🔗 Referrals
             </div>
           </nav>
 
