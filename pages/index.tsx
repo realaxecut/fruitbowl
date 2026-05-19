@@ -61,7 +61,7 @@ interface RecentRound {
 type MobileTab = 'game' | 'chat' | 'history' | 'settings';
 
 export default function Home() {
-  const { publicKey, sendTransaction, signTransaction } = useWallet();
+  const { publicKey, sendTransaction, signTransaction, select, connect, wallets } = useWallet();
   const { connection } = useConnection();
   const router = useRouter();
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -75,6 +75,8 @@ export default function Home() {
   const [recentRounds, setRecentRounds] = useState<RecentRound[]>([]);
   const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});
   const [showSettings, setShowSettings] = useState(false);
+  const [discordLinked, setDiscordLinked] = useState(false);
+  const [discordInGuild, setDiscordInGuild] = useState(false);
   const [betAmount, setBetAmount] = useState('');
   const [betLoading, setBetLoading] = useState(false);
   const [betError, setBetError] = useState('');
@@ -136,6 +138,10 @@ export default function Home() {
 
   const openCrate = () => {
     if (!crateAvailable || crateSpinning || !wallet || !socket) return;
+    if (!discordInGuild) {
+      setShowSettings(true); // send them to settings to connect Discord
+      return;
+    }
     setCrateSpinning(true);
     setCrateSpinResult(null);
     socket.emit('open_daily_crate', { wallet, prizes: CRATE_PRIZES.map(p => ({ label: p.label, xp: (p as any).xp || 0, sol: (p as any).sol || 0, chance: p.chance })) });
@@ -155,6 +161,48 @@ export default function Home() {
   }, [round?.status, round?.countdownEndsAt]);
 
   const wallet = publicKey?.toBase58() || null;
+
+  // ── Discord status (must be after wallet declaration) ────────────────────
+  useEffect(() => {
+    if (!wallet) { setDiscordLinked(false); setDiscordInGuild(false); return; }
+    fetch(`/api/discord-auth?action=status&wallet=${encodeURIComponent(wallet)}`)
+      .then(r => r.json())
+      .then(d => { setDiscordLinked(!!d.linked); setDiscordInGuild(!!d.inGuild); })
+      .catch(() => {});
+  }, [wallet]);
+
+  // Handle Discord OAuth redirect result (?discord=success|not_in_guild)
+  // Also auto-reconnect the wallet the user had before going to Discord
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const discordStatus = params.get('discord');
+    if (!discordStatus) return;
+
+    // Clean up URL immediately
+    const url = new URL(window.location.href);
+    url.searchParams.delete('discord');
+    url.searchParams.delete('discordUser');
+    window.history.replaceState({}, '', url.toString());
+
+    // Auto-reconnect wallet using the adapter's stored wallet name
+    const storedWalletName = localStorage.getItem('walletName');
+    if (storedWalletName && !publicKey) {
+      const matchedWallet = wallets.find(w => w.adapter.name === storedWalletName);
+      if (matchedWallet) {
+        try {
+          select(matchedWallet.adapter.name);
+          // connect() is called automatically by the adapter after select
+        } catch (e) {
+          console.warn('Auto-reconnect failed:', e);
+        }
+      }
+    }
+
+    // Re-fetch Discord status (wallet may not be set yet — handled by the other effect)
+    setShowSettings(true);
+  }, [wallets]);
+
 
   useEffect(() => {
     if (wallet && !prevWalletRef.current) {
