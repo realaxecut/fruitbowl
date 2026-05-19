@@ -33,6 +33,43 @@
 html, body { background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-body); height: 100%; overflow: hidden; }
 #__next { height: 100%; }
 
+/* ── Mobile-specific fixes ── */
+@media (max-width: 767px) {
+  html, body { overflow: hidden; position: fixed; width: 100%; }
+  #__next { height: 100vh; }
+
+  /* Wallet button compact on mobile */
+  .wallet-adapter-button {
+    font-size: 11px !important;
+    padding: 8px 12px !important;
+    height: 34px !important;
+  }
+
+  /* Make inputs bigger touch targets on mobile */
+  input[type="number"] {
+    font-size: 16px !important; /* prevents iOS zoom */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Settings modal — full screen on mobile */
+  .wallet-adapter-modal-wrapper {
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: 20px 20px 0 0 !important;
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+  }
+
+  /* Hide desktop nav on mobile (fruitroll/referral pages that don't use the mobile layout system) */
+  .desktop-nav { display: none !important; }
+
+  /* Fruitroll / other pages: make header scroll-safe */
+  header { overflow-x: auto; }
+}
+
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,107,0,0.3); border-radius: 2px; }
