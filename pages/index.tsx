@@ -91,12 +91,55 @@ export default function Home() {
   const [mobileTab, setMobileTab] = useState<MobileTab>('game');
   const [isMobile, setIsMobile] = useState(false);
 
+  // ── Daily crate ──────────────────────────────────────────────────────────
+  const CRATE_PRIZES = [
+    { label: '500 XP',    xp: 500,  sol: 0,      chance: 94.934698 },
+    { label: '0.001 SOL', xp: 0,    sol: 0.001,  chance: 5 },
+    { label: '0.005 SOL', xp: 0,    sol: 0.005,  chance: 0.05 },
+    { label: '0.02 SOL',  xp: 0,    sol: 0.02,   chance: 0.01 },
+    { label: '0.1 SOL',   xp: 0,    sol: 0.1,    chance: 0.005 },
+    { label: '1 SOL',     xp: 0,    sol: 1,       chance: 0.0003 },
+    { label: '2.5 SOL',   xp: 0,    sol: 2.5,    chance: 0.000001 },
+    { label: '10 SOL',    xp: 0,    sol: 10,     chance: 0.000001 },
+  ];
+  const [crateAvailable, setCrateAvailable] = useState(false);
+  const [crateNextAt, setCrateNextAt] = useState(0);
+  const [crateTimeLeft, setCrateTimeLeft] = useState('');
+  const [showCrateModal, setShowCrateModal] = useState(false);
+  const [crateSpinning, setCrateSpinning] = useState(false);
+  const [crateCarouselOffset, setCrateCarouselOffset] = useState(0);
+  const [crateSpinResult, setCrateSpinResult] = useState<{ label: string; xp: number; sol: number } | null>(null);
+  const crateAnimRef = useRef<number | null>(null);
+
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  // ── Crate countdown ticker ────────────────────────────────────────────────
+  useEffect(() => {
+    const tick = () => {
+      if (!crateNextAt) { setCrateTimeLeft(''); return; }
+      const ms = Math.max(0, crateNextAt - Date.now());
+      if (ms === 0) { setCrateAvailable(true); setCrateTimeLeft(''); return; }
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      setCrateTimeLeft(`${h}h ${m}m ${s}s`);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [crateNextAt]);
+
+  const openCrate = () => {
+    if (!crateAvailable || crateSpinning || !wallet || !socket) return;
+    setCrateSpinning(true);
+    setCrateSpinResult(null);
+    socket.emit('open_daily_crate', { wallet, prizes: CRATE_PRIZES.map(p => ({ label: p.label, xp: (p as any).xp || 0, sol: (p as any).sol || 0, chance: p.chance })) });
+  };
 
   useEffect(() => {
     const tick = () => {
@@ -173,6 +216,43 @@ export default function Home() {
     s.on('unclaimed_wins', (data: { items: any[]; totalLamports: number }) => {
       setUnclaimedTotal(data.totalLamports || 0);
     });
+    s.on('crate_state', (res: { available: boolean; nextAt: number }) => {
+      setCrateAvailable(res.available);
+      setCrateNextAt(res.nextAt || 0);
+    });
+    s.on('crate_result', (res: { success: boolean; prizeIdx?: number; prize?: any; nextAt?: number; error?: string }) => {
+      if (res.success && res.prize != null) {
+        const ITEM_W = 110;
+        const STRIP_REPEATS = 8;
+        const targetItem = CRATE_PRIZES.length * 5 + (res.prizeIdx ?? 0);
+        const targetOffset = targetItem * ITEM_W;
+        const nudge = Math.floor(Math.random() * 30) - 15;
+        const finalOffset = targetOffset + nudge;
+        const duration = 3200;
+        const start = performance.now();
+        const animate = (now: number) => {
+          const elapsed = now - start;
+          const t = Math.min(elapsed / duration, 1);
+          const ease = 1 - Math.pow(1 - t, 3);
+          const current = finalOffset * ease;
+          setCrateCarouselOffset(current);
+          if (t < 1) {
+            crateAnimRef.current = requestAnimationFrame(animate);
+          } else {
+            setCrateCarouselOffset(finalOffset);
+            setCrateSpinning(false);
+            const result = { label: res.prize.label, xp: res.prize.xp || 0, sol: res.prize.sol || 0 };
+            setCrateSpinResult(result);
+            setCrateAvailable(false);
+            setCrateNextAt(res.nextAt || 0);
+          }
+        };
+        crateAnimRef.current = requestAnimationFrame(animate);
+      } else {
+        setCrateSpinning(false);
+        if (res.nextAt) { setCrateAvailable(false); setCrateNextAt(res.nextAt); }
+      }
+    });
     setSocket(s);
     return () => { s.disconnect(); };
   }, []);
@@ -181,6 +261,7 @@ export default function Home() {
     if (!wallet || !socket || !displayName) return;
     socket.emit('register_user', { wallet, displayName });
     socket.emit('get_unclaimed_wins', { wallet });
+    socket.emit('get_crate_state', { wallet });
   }, [wallet, socket, displayName]);
 
   const handleUsernameConfirm = useCallback((name: string, referralCode?: string) => {
@@ -454,6 +535,32 @@ export default function Home() {
               FruitBowl<span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>.fun</span>
             </span>
             <div style={{ width: 7, height: 7, borderRadius: '50%', background: connected ? '#10b981' : '#ef4444', boxShadow: connected ? '0 0 8px #10b981' : 'none', flexShrink: 0 }} />
+            {wallet && (
+              <button
+                onClick={() => setShowCrateModal(true)}
+                title="Daily Crate"
+                style={{
+                  position: 'relative',
+                  background: crateAvailable ? 'linear-gradient(135deg,rgba(124,58,237,0.25),rgba(167,139,250,0.15))' : 'rgba(255,255,255,0.05)',
+                  border: crateAvailable ? '1px solid rgba(167,139,250,0.5)' : '1px solid var(--border-color)',
+                  borderRadius: '8px', color: crateAvailable ? '#a78bfa' : 'var(--text-muted)', cursor: 'pointer',
+                  height: '34px', padding: '0 8px', fontSize: '16px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+                  flexShrink: 0, transition: 'all 0.2s',
+                  boxShadow: crateAvailable ? '0 0 12px rgba(139,92,246,0.3)' : 'none',
+                }}
+              >
+                <span style={{ fontSize: '18px' }}>📦</span>
+                {crateAvailable && (
+                  <span style={{
+                    position: 'absolute', top: '-4px', right: '-4px',
+                    width: '10px', height: '10px', borderRadius: '50%',
+                    background: '#a78bfa', boxShadow: '0 0 6px rgba(167,139,250,0.8)',
+                    animation: 'pulse 1.5s infinite',
+                  }} />
+                )}
+              </button>
+            )}
             <WalletMultiButton style={{ height: '34px', borderRadius: '8px', fontSize: '11px', padding: '0 10px', background: 'linear-gradient(135deg,#cc5500,#ff8c00)', fontFamily: 'var(--font-display)', fontWeight: 700, flexShrink: 0 }} />
           </header>
 
@@ -639,6 +746,104 @@ export default function Home() {
         {showWinner && winnerInfo && (
           <WinnerOverlay winnerWallet={winnerInfo.winnerWallet} winnerDisplayName={winnerInfo.winnerDisplayName} winnerShare={winnerInfo.winnerShare} totalPot={winnerInfo.totalPot} isYou={winnerInfo.winnerWallet === wallet} roundId={winnerInfo.roundId} wallet={wallet} socket={socket} onClose={() => { setShowWinner(false); setWinnerInfo(null); }} />
         )}
+
+        {showCrateModal && wallet && (() => {
+          const ITEM_W = 110;
+          const STRIP_REPEATS = 8;
+          const stripPrizes = Array.from({ length: STRIP_REPEATS }, () => CRATE_PRIZES).flat();
+          const totalW = stripPrizes.length * ITEM_W;
+          const prizeColors: Record<number, string> = {
+            0: '#6b7280', 1: '#3b82f6', 2: '#8b5cf6', 3: '#f59e0b',
+            4: '#ef4444', 5: '#10b981', 6: '#f97316', 7: '#ec4899',
+          };
+          return (
+            <div
+              onClick={(e) => { if (e.target === e.currentTarget && !crateSpinning) setShowCrateModal(false); }}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000, backdropFilter: 'blur(10px)' }}
+            >
+              <div style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(139,92,246,0.3)', borderRadius: '24px', width: '100%', maxWidth: '560px', margin: '0 20px', overflow: 'hidden', boxShadow: '0 0 60px rgba(139,92,246,0.2)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 24px', borderBottom: '1px solid rgba(139,92,246,0.15)', background: 'rgba(139,92,246,0.06)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '22px' }}>📦</span>
+                    <div>
+                      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px', color: 'var(--text-primary)' }}>Daily Crate</div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {crateAvailable ? '✨ Free spin available!' : `Next crate in ${crateTimeLeft}`}
+                      </div>
+                    </div>
+                  </div>
+                  {!crateSpinning && (
+                    <button onClick={() => setShowCrateModal(false)} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '18px', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
+                  )}
+                </div>
+                <div style={{ padding: '28px 24px 20px' }}>
+                  <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '14px', border: '1px solid rgba(139,92,246,0.25)', background: 'rgba(0,0,0,0.3)', height: '120px', marginBottom: '20px' }}>
+                    <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: `${ITEM_W}px`, background: 'rgba(139,92,246,0.08)', borderLeft: '2px solid rgba(167,139,250,0.5)', borderRight: '2px solid rgba(167,139,250,0.5)', zIndex: 2, pointerEvents: 'none' }} />
+                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, rgba(0,0,0,0.65) 0%, transparent 18%, transparent 82%, rgba(0,0,0,0.65) 100%)', zIndex: 3, pointerEvents: 'none' }} />
+                    <div style={{ position: 'absolute', bottom: '4px', left: '50%', transform: 'translateX(-50%)', fontSize: '14px', zIndex: 4, pointerEvents: 'none' }}>▲</div>
+                    <div style={{ display: 'flex', alignItems: 'center', position: 'absolute', top: 0, bottom: 0, left: `calc(50% - ${ITEM_W / 2}px - ${crateCarouselOffset}px)`, width: `${totalW}px` }}>
+                      {stripPrizes.map((p, i) => {
+                        const origIdx = i % CRATE_PRIZES.length;
+                        const color = prizeColors[origIdx] || '#6b7280';
+                        return (
+                          <div key={i} style={{ width: `${ITEM_W}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', height: '100%', borderRight: '1px solid rgba(255,255,255,0.04)' }}>
+                            <div style={{ width: '52px', height: '52px', borderRadius: '10px', background: `${color}18`, border: `1px solid ${color}50`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <span style={{ fontSize: '22px' }}>{(p as any).xp > 0 ? '⭐' : '◎'}</span>
+                            </div>
+                            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '10px', color, textAlign: 'center', lineHeight: 1.2 }}>{p.label}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {crateSpinResult && !crateSpinning && (
+                    <div style={{ textAlign: 'center', padding: '14px', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.35)', borderRadius: '12px', marginBottom: '16px' }}>
+                      <div style={{ fontSize: '26px', marginBottom: '4px' }}>🎊</div>
+                      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '20px', color: '#a78bfa' }}>
+                        {crateSpinResult.xp > 0 ? `+${crateSpinResult.xp.toLocaleString()} XP` : `+${crateSpinResult.sol} SOL`}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>{crateSpinResult.label}</div>
+                    </div>
+                  )}
+                  <button
+                    onClick={openCrate}
+                    disabled={!crateAvailable || crateSpinning}
+                    style={{
+                      width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
+                      background: crateSpinning ? 'rgba(255,255,255,0.06)' : crateAvailable ? 'linear-gradient(135deg,#6d28d9,#7c3aed,#a78bfa)' : 'rgba(255,255,255,0.05)',
+                      color: (crateAvailable && !crateSpinning) ? '#fff' : 'var(--text-muted)',
+                      fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px',
+                      cursor: (crateAvailable && !crateSpinning) ? 'pointer' : 'not-allowed',
+                      letterSpacing: '0.06em',
+                      boxShadow: crateAvailable && !crateSpinning ? '0 4px 24px rgba(109,40,217,0.5)' : 'none',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    {crateSpinning ? '⏳ Spinning...' : crateAvailable ? '🎁 Daily Crate' : `⏳ ${crateTimeLeft}`}
+                  </button>
+                  <div style={{ marginTop: '20px' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.1em', fontFamily: 'var(--font-display)', fontWeight: 700, marginBottom: '8px' }}>POTENTIAL DROPS</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                      {CRATE_PRIZES.map((p, i) => {
+                        const color = prizeColors[i] || '#6b7280';
+                        return (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 10px', borderRadius: '8px', background: `${color}0f`, border: `1px solid ${color}30` }}>
+                            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', color }}>
+                              {(p as any).xp > 0 ? '⭐' : '◎'} {p.label}
+                            </span>
+                            <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '10px', color: 'var(--text-muted)' }}>
+                              {p.chance < 0.001 ? p.chance.toFixed(6) : p.chance < 0.01 ? p.chance.toFixed(4) : p.chance.toFixed(3)}%
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </>
     );
   }
@@ -680,6 +885,39 @@ export default function Home() {
               <div style={{ width: 22, height: 22, borderRadius: '50%', background: 'linear-gradient(135deg,var(--orange-glow),var(--orange-soft))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#fff', fontWeight: 800 }}>{displayName.charAt(0).toUpperCase()}</div>
               {displayName}
             </div>
+          )}
+
+          {wallet && (
+            <button
+              onClick={() => setShowCrateModal(true)}
+              title="Daily Crate"
+              style={{
+                position: 'relative',
+                background: crateAvailable
+                  ? 'linear-gradient(135deg,rgba(124,58,237,0.25),rgba(167,139,250,0.15))'
+                  : 'rgba(255,255,255,0.05)',
+                border: crateAvailable ? '1px solid rgba(167,139,250,0.5)' : '1px solid var(--border-color)',
+                borderRadius: '8px', color: crateAvailable ? '#a78bfa' : 'var(--text-muted)', cursor: 'pointer',
+                height: '34px', padding: '0 10px', fontSize: '16px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                flexShrink: 0, transition: 'all 0.2s',
+                boxShadow: crateAvailable ? '0 0 12px rgba(139,92,246,0.3)' : 'none',
+              }}
+            >
+              <span style={{ fontSize: '18px' }}>📦</span>
+              {crateAvailable && (
+                <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '11px', letterSpacing: '0.04em' }}>FREE</span>
+              )}
+              {crateAvailable && (
+                <span style={{
+                  position: 'absolute', top: '-4px', right: '-4px',
+                  width: '10px', height: '10px', borderRadius: '50%',
+                  background: '#a78bfa',
+                  boxShadow: '0 0 6px rgba(167,139,250,0.8)',
+                  animation: 'pulse 1.5s infinite',
+                }} />
+              )}
+            </button>
           )}
 
           {wallet && (
@@ -765,6 +1003,108 @@ export default function Home() {
       {showWinner && winnerInfo && (
         <WinnerOverlay winnerWallet={winnerInfo.winnerWallet} winnerDisplayName={winnerInfo.winnerDisplayName} winnerShare={winnerInfo.winnerShare} totalPot={winnerInfo.totalPot} isYou={winnerInfo.winnerWallet === wallet} roundId={winnerInfo.roundId} wallet={wallet} socket={socket} onClose={() => { setShowWinner(false); setWinnerInfo(null); }} />
       )}
+
+      {showCrateModal && wallet && (() => {
+        const ITEM_W = 110;
+        const STRIP_REPEATS = 8;
+        const stripPrizes = Array.from({ length: STRIP_REPEATS }, () => CRATE_PRIZES).flat();
+        const totalW = stripPrizes.length * ITEM_W;
+        const prizeColors: Record<number, string> = {
+          0: '#6b7280', 1: '#3b82f6', 2: '#8b5cf6', 3: '#f59e0b',
+          4: '#ef4444', 5: '#10b981', 6: '#f97316', 7: '#ec4899',
+        };
+        return (
+          <div
+            onClick={(e) => { if (e.target === e.currentTarget && !crateSpinning) setShowCrateModal(false); }}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000, backdropFilter: 'blur(10px)' }}
+          >
+            <div style={{ background: 'var(--bg-secondary)', border: '1px solid rgba(139,92,246,0.3)', borderRadius: '24px', width: '100%', maxWidth: '560px', margin: '0 20px', overflow: 'hidden', boxShadow: '0 0 60px rgba(139,92,246,0.2)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 24px', borderBottom: '1px solid rgba(139,92,246,0.15)', background: 'rgba(139,92,246,0.06)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '22px' }}>📦</span>
+                  <div>
+                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px', color: 'var(--text-primary)' }}>Daily Crate</div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {crateAvailable ? '✨ Free spin available!' : `Next crate in ${crateTimeLeft}`}
+                    </div>
+                  </div>
+                </div>
+                {!crateSpinning && (
+                  <button onClick={() => setShowCrateModal(false)} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '18px', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
+                )}
+              </div>
+
+              <div style={{ padding: '28px 24px 20px' }}>
+                <div style={{ position: 'relative', overflow: 'hidden', borderRadius: '14px', border: '1px solid rgba(139,92,246,0.25)', background: 'rgba(0,0,0,0.3)', height: '120px', marginBottom: '20px' }}>
+                  <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: `${ITEM_W}px`, background: 'rgba(139,92,246,0.08)', borderLeft: '2px solid rgba(167,139,250,0.5)', borderRight: '2px solid rgba(167,139,250,0.5)', zIndex: 2, pointerEvents: 'none' }} />
+                  <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, rgba(0,0,0,0.65) 0%, transparent 18%, transparent 82%, rgba(0,0,0,0.65) 100%)', zIndex: 3, pointerEvents: 'none' }} />
+                  <div style={{ position: 'absolute', bottom: '4px', left: '50%', transform: 'translateX(-50%)', fontSize: '14px', zIndex: 4, pointerEvents: 'none' }}>▲</div>
+                  <div style={{ display: 'flex', alignItems: 'center', position: 'absolute', top: 0, bottom: 0, left: `calc(50% - ${ITEM_W / 2}px - ${crateCarouselOffset}px)`, width: `${totalW}px` }}>
+                    {stripPrizes.map((p, i) => {
+                      const origIdx = i % CRATE_PRIZES.length;
+                      const color = prizeColors[origIdx] || '#6b7280';
+                      return (
+                        <div key={i} style={{ width: `${ITEM_W}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', height: '100%', borderRight: '1px solid rgba(255,255,255,0.04)' }}>
+                          <div style={{ width: '52px', height: '52px', borderRadius: '10px', background: `${color}18`, border: `1px solid ${color}50`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <span style={{ fontSize: '22px' }}>{(p as any).xp > 0 ? '⭐' : '◎'}</span>
+                          </div>
+                          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '10px', color, textAlign: 'center', lineHeight: 1.2 }}>{p.label}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {crateSpinResult && !crateSpinning && (
+                  <div style={{ textAlign: 'center', padding: '14px', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.35)', borderRadius: '12px', marginBottom: '16px' }}>
+                    <div style={{ fontSize: '26px', marginBottom: '4px' }}>🎊</div>
+                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '20px', color: '#a78bfa' }}>
+                      {crateSpinResult.xp > 0 ? `+${crateSpinResult.xp.toLocaleString()} XP` : `+${crateSpinResult.sol} SOL`}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>{crateSpinResult.label}</div>
+                  </div>
+                )}
+
+                <button
+                  onClick={openCrate}
+                  disabled={!crateAvailable || crateSpinning}
+                  style={{
+                    width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
+                    background: crateSpinning ? 'rgba(255,255,255,0.06)' : crateAvailable ? 'linear-gradient(135deg,#6d28d9,#7c3aed,#a78bfa)' : 'rgba(255,255,255,0.05)',
+                    color: (crateAvailable && !crateSpinning) ? '#fff' : 'var(--text-muted)',
+                    fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px',
+                    cursor: (crateAvailable && !crateSpinning) ? 'pointer' : 'not-allowed',
+                    letterSpacing: '0.06em',
+                    boxShadow: crateAvailable && !crateSpinning ? '0 4px 24px rgba(109,40,217,0.5)' : 'none',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {crateSpinning ? '⏳ Spinning...' : crateAvailable ? '🎁 Daily Crate' : `⏳ ${crateTimeLeft}`}
+                </button>
+
+                <div style={{ marginTop: '20px' }}>
+                  <div style={{ fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.1em', fontFamily: 'var(--font-display)', fontWeight: 700, marginBottom: '8px' }}>POTENTIAL DROPS</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                    {CRATE_PRIZES.map((p, i) => {
+                      const color = prizeColors[i] || '#6b7280';
+                      return (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 10px', borderRadius: '8px', background: `${color}0f`, border: `1px solid ${color}30` }}>
+                          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', color }}>
+                            {(p as any).xp > 0 ? '⭐' : '◎'} {p.label}
+                          </span>
+                          <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '10px', color: 'var(--text-muted)' }}>
+                            {p.chance < 0.001 ? p.chance.toFixed(6) : p.chance < 0.01 ? p.chance.toFixed(4) : p.chance.toFixed(3)}%
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }

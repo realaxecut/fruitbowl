@@ -662,25 +662,7 @@ export default function FruitRoll() {
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>Pick a fruit · Watch the race · Win big</div>
             </div>
 
-            {/* Prop Money banner — mod only */}
-            {isPropMoney && wallet === '9QeT88EePX6w7DsTWe5Tpx9s5go6QfxrUtpxtFeznfxi' && (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                padding: '10px 14px',
-                background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.4)',
-                borderRadius: '10px',
-              }}>
-                <span style={{ fontSize: '18px' }}>💵</span>
-                <div>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '12px', color: '#fbbf24', letterSpacing: '0.06em' }}>
-                    PROP MONEY MODE
-                  </div>
-                  <div style={{ fontSize: '10px', color: 'rgba(251,191,36,0.7)', marginTop: '2px' }}>
-                    No real SOL — bets are simulated
-                  </div>
-                </div>
-              </div>
-            )}
+
 
             {/* Fruit count selector */}
             <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '14px', padding: '14px' }}>
@@ -804,7 +786,7 @@ export default function FruitRoll() {
                     letterSpacing: '0.05em',
                   }}
                 >
-                  {isGameLocked ? '🔒 Game Locked' : betLoading ? '⏳ Confirming...' : (isPropMoney && wallet === '9QeT88EePX6w7DsTWe5Tpx9s5go6QfxrUtpxtFeznfxi') ? `💵 Roll (Prop Money)` : `🎰 Roll It!`}
+                  {isGameLocked ? '🔒 Game Locked' : betLoading ? '⏳ Confirming...' : `🎰 Roll It!`}
                 </button>
               )
             ) : phase === 'result' ? (
