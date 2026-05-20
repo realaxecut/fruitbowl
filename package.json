@@ -15,6 +15,7 @@
     "@solana/web3.js": "^1.95.3",
     "better-sqlite3": "^12.10.0",
     "bs58": "^5.0.0",
+    "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
     "framer-motion": "^11.2.10",
     "lucide-react": "^0.383.0",

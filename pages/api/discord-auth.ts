@@ -23,7 +23,7 @@ db.exec(`
 `);
 
 const stmtUpsert = db.prepare(`
-  INSERT INTO discord_links (wallet, discord_id, username, avatar, in_guild, linked_at, updated_at)
+  INSERT OR REPLACE INTO discord_links (wallet, discord_id, username, avatar, in_guild, linked_at, updated_at)
   VALUES (@wallet, @discord_id, @username, @avatar, @in_guild, @now, @now)
   ON CONFLICT(wallet) DO UPDATE SET
     discord_id = excluded.discord_id,
