@@ -26,15 +26,15 @@ const BOMB_COLOR = '#1a1a2e';
 // ── Types ────────────────────────────────────────────────────────────────────
 interface Fruit {
   id: number;
-  x: number; y: number;       // px on canvas
-  vx: number; vy: number;     // px/frame
+  x: number; y: number;
+  vx: number; vy: number;
   rotation: number;
   rotSpeed: number;
   radius: number;
-  fruitIdx: number;           // -1 = bomb
+  fruitIdx: number;           // -1 = bomb, -2 = freeze, -3 = multiplier
   sliced: boolean;
-  sliceAngle: number;         // angle of slash that sliced it
-  halfOffset: number;         // how far halves have separated
+  sliceAngle: number;
+  halfOffset: number;
   halfOffsetSpeed: number;
   opacity: number;
 }
@@ -78,7 +78,7 @@ type Phase = 'lobby' | 'countdown' | 'playing' | 'result';
 
 const GAME_DURATION = 60; // seconds
 const QUICK_AMOUNTS = ['0.01', '0.1', '0.5', '1'];
-const GRAVITY = 0.18;        // px/frame² — feels like real Fruit Ninja
+const GRAVITY = 0.62;        // px/frame²
 const TRAIL_FADE_MS = 140;   // how long trail points live
 const TRAIL_MAX = 28;
 
@@ -101,6 +101,13 @@ function segmentCircle(ax: number, ay: number, bx: number, by: number, cx: numbe
   const px = ax + t * dx, py = ay + t * dy;
   return Math.hypot(px - cx, py - cy) < r;
 }
+
+// ── Power-up definitions ────────────────────────────────────────────────────
+const POWERUPS = [
+  { type: 'freeze',     emoji: '❄️',  color: '#63b3ed', label: 'FREEZE!',     duration: 4000 },
+  { type: 'multiplier', emoji: '2️⃣✖️', color: '#fbbf24', label: '2× POINTS!', duration: 5000 },
+] as const;
+type PowerupType = typeof POWERUPS[number]['type'];
 
 // ── Main Component ───────────────────────────────────────────────────────────
 export default function SliceDuel() {
@@ -167,6 +174,13 @@ export default function SliceDuel() {
   const walletRef = useRef<string | null>(null);
   const isSlicingRef = useRef(false);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const phaseRef = useRef<Phase>('lobby');
+
+  // Active power-up state (refs so RAF loop can read without stale closures)
+  const freezeUntilRef = useRef<number>(0);      // timestamp when opponent freeze expires
+  const frozenByOpponentUntilRef = useRef<number>(0); // when we are frozen
+  const multiplierUntilRef = useRef<number>(0);  // when 2× expires
+  const [activePowerup, setActivePowerup] = useState<{ type: PowerupType; expiresAt: number } | null>(null);
 
   // ── Independent game timer using performance.now() ───────────────────────
   // Each client runs its own wall-clock timer — NOT synced via socket.
@@ -175,9 +189,14 @@ export default function SliceDuel() {
 
   // Emoji rendering cache (pre-render to offscreen canvas for perf)
   const emojiCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  // Background gradient cache — recreate only on resize
+  const bgGradientRef = useRef<{ grad: CanvasGradient; w: number; h: number } | null>(null);
+  // Juice stains that persist on the wall
+  const stainsRef = useRef<{ x: number; y: number; r: number; color: string; alpha: number; blobs: { dx: number; dy: number; r: number }[]; drops: { dx: number; dy: number; r: number; angle: number; stretch: number }[]; spawnedAt: number }[]>([]);
 
   useEffect(() => { walletRef.current = wallet; }, [wallet]);
   useEffect(() => { socketRef.current = socket; }, [socket]);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
 
   // Pre-render emoji to offscreen canvas
   const getEmojiCanvas = useCallback((emoji: string, size: number): HTMLCanvasElement => {
@@ -219,6 +238,10 @@ export default function SliceDuel() {
       startCountdown();
     });
     s.on('sliceduel_opponent_score', (data: { score: number }) => setOpponentScore(data.score));
+    s.on('sliceduel_opponent_freeze', () => {
+      // Opponent hit our freeze powerup — we get frozen
+      frozenByOpponentUntilRef.current = performance.now() + 4000;
+    });
     s.on('sliceduel_result', (data: {
       winnerWallet: string; yourScore: number; opponentScore: number; payoutLamports: number; isTestCash?: boolean;
     }) => endGame(data));
@@ -365,21 +388,30 @@ export default function SliceDuel() {
     const rng = seedRngRef.current;
     if (!rng) return;
     const w = canvas.width;
-    const count = rng() < 0.25 ? (rng() < 0.4 ? 3 : 2) : 1;
+    const h = canvas.height;
+    // 70% single, 25% double, 5% triple — Fruit Ninja style
+    const count = rng() < 0.05 ? 3 : rng() < 0.3 ? 2 : 1;
     for (let i = 0; i < count; i++) {
-      const isBomb = rng() < 0.07;
-      const fruitIdx = isBomb ? -1 : Math.floor(rng() * FRUITS.length);
-      const radius = isBomb ? 26 : 22 + Math.floor(rng() * 16);
-      // Launch from bottom, spread across width
-      const x = radius * 2 + rng() * (w - radius * 4);
-      const vy = -(10 + rng() * 7);   // upward
-      const vx = (rng() - 0.5) * 5;
+      // Determine fruit type: 5% freeze, 5% multiplier, 6% bomb, rest normal fruit
+      let fruitIdx: number;
+      const roll = rng();
+      if (roll < 0.05) fruitIdx = -2;       // freeze
+      else if (roll < 0.10) fruitIdx = -3;  // multiplier
+      else if (roll < 0.16) fruitIdx = -1;  // bomb
+      else fruitIdx = Math.floor(rng() * FRUITS.length);
+      const radius = (fruitIdx < 0) ? 28 : 28 + Math.floor(rng() * 14);
+      // Launch from lower third of screen width, avoid edges
+      const x = radius * 3 + rng() * (w - radius * 6);
+      // Cap vy so fruit never goes more than ~75% up the canvas
+      const maxVy = -Math.sqrt(2 * GRAVITY * h * 0.75);
+      const vy = maxVy * (0.88 + rng() * 0.18);
+      const vx = (rng() - 0.5) * 9;
       fruitsRef.current.push({
         id: nextIdRef.current++,
-        x, y: canvas.height + radius,
+        x, y: h + radius,
         vx, vy,
         rotation: rng() * Math.PI * 2,
-        rotSpeed: (rng() - 0.5) * 0.12,
+        rotSpeed: (rng() - 0.5) * 0.1,
         radius,
         fruitIdx,
         sliced: false,
@@ -393,18 +425,32 @@ export default function SliceDuel() {
 
   // ── Juice particles on slice ─────────────────────────────────────────────
   const spawnParticles = useCallback((x: number, y: number, color: string, sliceAngle: number) => {
-    const count = 12 + Math.floor(Math.random() * 8);
+    // Main juice splat blobs — big and visible like Fruit Ninja
+    const count = 14 + Math.floor(Math.random() * 8);
     for (let i = 0; i < count; i++) {
-      // Particles spray perpendicular to slice direction
-      const baseAngle = sliceAngle + Math.PI / 2 + (Math.random() - 0.5) * Math.PI;
-      const speed = 2 + Math.random() * 5;
+      const angle = sliceAngle + Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.4;
+      const speed = 3 + Math.random() * 8;
       particlesRef.current.push({
         x, y,
-        vx: Math.cos(baseAngle) * speed,
-        vy: Math.sin(baseAngle) * speed - 1,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2,
         life: 1,
-        decay: 0.025 + Math.random() * 0.03,
-        radius: 2 + Math.random() * 4,
+        decay: 0.018 + Math.random() * 0.022,
+        radius: 5 + Math.random() * 9,
+        color,
+      });
+    }
+    // Small droplets spraying wide
+    for (let i = 0; i < 8; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 4;
+      particlesRef.current.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 1,
+        life: 1,
+        decay: 0.03 + Math.random() * 0.04,
+        radius: 2 + Math.random() * 3,
         color,
       });
     }
@@ -418,42 +464,98 @@ export default function SliceDuel() {
     // Clear
     ctx.clearRect(0, 0, w, h);
 
-    // Background gradient
-    const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
-    bg.addColorStop(0, '#1a0d2e');
-    bg.addColorStop(1, '#0a0510');
-    ctx.fillStyle = bg;
+    // Background gradient (cached, only rebuilt on resize)
+    if (!bgGradientRef.current || bgGradientRef.current.w !== w || bgGradientRef.current.h !== h) {
+      // Wooden board — warm brown tones like Fruit Ninja
+      const bg = ctx.createLinearGradient(0, 0, 0, h);
+      bg.addColorStop(0,   '#6b3a1f');
+      bg.addColorStop(0.4, '#7c4522');
+      bg.addColorStop(1,   '#4a2510');
+      bgGradientRef.current = { grad: bg, w, h };
+    }
+    ctx.fillStyle = bgGradientRef.current.grad;
     ctx.fillRect(0, 0, w, h);
+
+    // Wood grain lines
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    const grainCount = Math.floor(w / 18);
+    for (let gi = 0; gi < grainCount; gi++) {
+      const gx = gi * 18 + 4;
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx + 6, h);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // ── Draw juice stains (organic splat, smooth ease-out fade) ─────────
+    const STAIN_LIFE = 4000;
+    stainsRef.current = stainsRef.current.filter(s => now - s.spawnedAt < STAIN_LIFE);
+    for (const s of stainsRef.current) {
+      const age = (now - s.spawnedAt) / STAIN_LIFE;
+      // Ease-out cube: fast initial fade, smooth tail — no flicker
+      const fade = 1 - age * age * age;
+      if (fade <= 0) continue;
+      ctx.save();
+      ctx.globalAlpha = s.alpha * fade;
+      ctx.fillStyle = s.color;
+
+      // Central organic blob using bezier curves through random-radius points
+      const pts = s.blobs.length;
+      ctx.beginPath();
+      for (let i = 0; i < pts; i++) {
+        const b0 = s.blobs[i];
+        const b1 = s.blobs[(i + 1) % pts];
+        const mx = s.x + (b0.dx + b1.dx) / 2;
+        const my = s.y + (b0.dy + b1.dy) / 2;
+        if (i === 0) ctx.moveTo(mx, my);
+        ctx.quadraticCurveTo(s.x + b0.dx, s.y + b0.dy, mx, my);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Satellite droplets — small teardrop ellipses
+      for (const b of s.drops) {
+        ctx.save();
+        ctx.translate(s.x + b.dx, s.y + b.dy);
+        ctx.rotate(b.angle);
+        ctx.scale(1, b.stretch);
+        ctx.beginPath();
+        ctx.arc(0, 0, b.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
 
     // ── Draw slice trail ─────────────────────────────────────────────────
     const trail = trailRef.current.filter(p => now - p.t < TRAIL_FADE_MS);
     trailRef.current = trail;
     if (trail.length > 1) {
       for (let i = 1; i < trail.length; i++) {
-        const age0 = (now - trail[i - 1].t) / TRAIL_FADE_MS;
-        const age1 = (now - trail[i].t) / TRAIL_FADE_MS;
-        const alpha = Math.max(0, 1 - Math.max(age0, age1));
-        const thickness = (1 - Math.max(age0, age1)) * 4 + 1;
+        const age = (now - trail[i].t) / TRAIL_FADE_MS;
+        const alpha = Math.max(0, 1 - age);
+        const thickness = alpha * 6 + 1;
 
-        // Glow pass
-        ctx.save();
+        // Wide glowing core — bright white like Fruit Ninja
         ctx.beginPath();
         ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
         ctx.lineTo(trail[i].x, trail[i].y);
-        ctx.strokeStyle = `rgba(255,240,180,${alpha * 0.25})`;
-        ctx.lineWidth = thickness * 4;
-        ctx.lineCap = 'round';
-        ctx.filter = 'blur(4px)';
-        ctx.stroke();
-        ctx.restore();
-
-        // Core
-        ctx.beginPath();
-        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
-        ctx.lineTo(trail[i].x, trail[i].y);
-        ctx.strokeStyle = `rgba(255,245,200,${alpha})`;
+        ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.9})`;
         ctx.lineWidth = thickness;
         ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Soft outer glow
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.strokeStyle = `rgba(200,240,255,${alpha * 0.3})`;
+        ctx.lineWidth = thickness * 3;
         ctx.stroke();
       }
     }
@@ -463,8 +565,9 @@ export default function SliceDuel() {
     for (const p of particlesRef.current) {
       p.x += p.vx; p.y += p.vy; p.vy += 0.15;
       p.life -= p.decay;
+      if (p.life <= 0) continue;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.radius * p.life, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, Math.max(0, p.radius * p.life), 0, Math.PI * 2);
       ctx.fillStyle = p.color.replace(')', `,${p.life})`).replace('rgb', 'rgba').replace('rgba(', 'rgba(');
       // Safer color injection:
       ctx.globalAlpha = p.life;
@@ -477,22 +580,26 @@ export default function SliceDuel() {
     fruitsRef.current = fruitsRef.current.filter(f => f.opacity > 0 && f.y < h + 120);
     for (const f of fruitsRef.current) {
       if (!f.sliced) {
-        // Physics
-        f.x += f.vx;
-        f.y += f.vy;
-        f.vy += GRAVITY;
-        f.rotation += f.rotSpeed;
+        // Physics — halted if frozen by opponent
+        const frozen = now < frozenByOpponentUntilRef.current;
+        if (!frozen) {
+          f.x += f.vx;
+          f.y += f.vy;
+          f.vy += GRAVITY;
+          f.rotation += f.rotSpeed;
+        }
       } else {
-        // Halves drift apart and fall faster
+        // Halves drift apart and fall faster — Fruit Ninja style
         f.halfOffset += f.halfOffsetSpeed;
-        f.halfOffsetSpeed += 0.3;
-        f.vy += GRAVITY * 1.5;
-        f.y += f.vy * 0.5;
-        f.opacity -= 0.025;
-        f.rotation += f.rotSpeed * 2;
+        f.halfOffsetSpeed += 0.5;
+        f.vy += GRAVITY * 2;
+        f.y += f.vy * 0.6;
+        f.x += f.vx * 0.5;
+        f.opacity -= 0.022;
+        f.rotation += f.rotSpeed * 3;
       }
 
-      const emoji = f.fruitIdx === -1 ? '💣' : FRUITS[f.fruitIdx].emoji;
+      const emoji = f.fruitIdx === -1 ? '💣' : f.fruitIdx === -2 ? '❄️' : f.fruitIdx === -3 ? '⭐' : FRUITS[f.fruitIdx].emoji;
       const diameter = f.radius * 2;
       const ec = getEmojiCanvas(emoji, f.radius);
 
@@ -501,11 +608,6 @@ export default function SliceDuel() {
         ctx.translate(f.x, f.y);
         ctx.rotate(f.rotation);
         ctx.globalAlpha = f.opacity;
-        // Glow
-        if (f.fruitIdx >= 0) {
-          ctx.shadowColor = FRUITS[f.fruitIdx].color;
-          ctx.shadowBlur = 12;
-        }
         ctx.drawImage(ec, -f.radius, -f.radius, diameter, diameter);
         ctx.restore();
       } else {
@@ -542,9 +644,56 @@ export default function SliceDuel() {
       ctx.font = `bold ${18 + (1 - p.life) * 4}px 'Space Grotesk', sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillStyle = p.color;
-      ctx.shadowColor = p.color;
-      ctx.shadowBlur = 8;
       ctx.fillText(p.text, p.x, p.y);
+      ctx.restore();
+    }
+    // ── Frozen overlay (when opponent froze us) ─────────────────────────
+    const frozenRemaining = frozenByOpponentUntilRef.current - now;
+    if (frozenRemaining > 0) {
+      ctx.save();
+      ctx.fillStyle = `rgba(99,179,237,${0.18 * Math.min(1, frozenRemaining / 500)})`;
+      ctx.fillRect(0, 0, w, h);
+      // Ice border vignette
+      const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.2, w / 2, h / 2, h * 0.9);
+      vig.addColorStop(0, 'rgba(99,179,237,0)');
+      vig.addColorStop(1, `rgba(99,179,237,${0.35 * Math.min(1, frozenRemaining / 500)})`);
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+    }
+
+    // ── Active power-up circle countdown ────────────────────────────────
+    const multRemaining = multiplierUntilRef.current - now;
+    const showCircle = frozenRemaining > 0 || multRemaining > 0;
+    if (showCircle) {
+      const isFreeze = frozenRemaining > 0;
+      const remaining = isFreeze ? frozenRemaining : multRemaining;
+      const total = isFreeze ? 4000 : 5000;
+      const frac = Math.max(0, remaining / total);
+      const cx = w - 54, cy = 54, cr = 28;
+
+      ctx.save();
+      // Background circle
+      ctx.beginPath();
+      ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fill();
+      // Progress arc
+      ctx.beginPath();
+      ctx.arc(cx, cy, cr, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+      ctx.strokeStyle = isFreeze ? '#63b3ed' : '#fbbf24';
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      // Icon
+      ctx.font = `${cr * 0.9}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(isFreeze ? '❄️' : '⭐', cx, cy);
+      // Seconds remaining
+      ctx.font = `bold 10px 'Space Grotesk', sans-serif`;
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`${(remaining / 1000).toFixed(1)}s`, cx, cy + cr + 12);
       ctx.restore();
     }
   }, [getEmojiCanvas]);
@@ -557,6 +706,7 @@ export default function SliceDuel() {
     particlesRef.current = [];
     trailRef.current = [];
     scorePopupsRef.current = [];
+    stainsRef.current = [];
     setScore(0);
     setOpponentScore(0);
     setCombo(0);
@@ -572,7 +722,7 @@ export default function SliceDuel() {
     const ctx = canvas.getContext('2d')!;
 
     // Spawn interval — uses seeded RNG for fruit type/position, wall clock for timing
-    const spawnInterval = 700; // ms between spawn events
+    const spawnInterval = 1100; // ms between spawn events
     let lastSpawn = performance.now();
 
     // HUD timer — separate setInterval, purely cosmetic
@@ -581,13 +731,6 @@ export default function SliceDuel() {
       const tl = Math.max(0, GAME_DURATION - elapsed);
       timeLeftRef.current = tl;
       setTimeLeft(Math.ceil(tl));
-
-      // Report score every 5s
-      const soc = socketRef.current;
-      const w = walletRef.current;
-      if (soc && w && Math.ceil(tl) % 5 === 0) {
-        soc.emit('sliceduel_score_update', { matchId: matchIdRef.current, wallet: w, score: scoreRef.current });
-      }
 
       if (tl <= 0) {
         clearInterval(hudTimer);
@@ -621,7 +764,11 @@ export default function SliceDuel() {
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     if (spawnTimerRef.current) { clearInterval(spawnTimerRef.current); spawnTimerRef.current = null; }
     const s = socketRef.current; const w = walletRef.current;
-    if (s && w) s.emit('sliceduel_game_end', { matchId: matchIdRef.current, wallet: w, score: scoreRef.current });
+    if (s && w) {
+      s.emit('sliceduel_game_end', { matchId: matchIdRef.current, wallet: w, score: scoreRef.current });
+      // Also emit final score so server has it for disconnect-payout resolution
+      s.emit('sliceduel_score_update', { matchId: matchIdRef.current, wallet: w, score: scoreRef.current, isFinal: true });
+    }
   }, []);
 
   const endGame = useCallback((data: { winnerWallet: string; yourScore: number; opponentScore: number; payoutLamports: number }) => {
@@ -663,7 +810,7 @@ export default function SliceDuel() {
   };
 
   const handleSlice = useCallback((ax: number, ay: number, bx: number, by: number, now: number) => {
-    if (phase !== 'playing') return;
+    if (phaseRef.current !== 'playing') return;
     const sliceAngle = Math.atan2(by - ay, bx - ax);
 
     for (const f of fruitsRef.current) {
@@ -680,30 +827,81 @@ export default function SliceDuel() {
         setScore(scoreRef.current);
         comboRef.current = 0;
         setCombo(0);
-        // Red particles
         for (let i = 0; i < 18; i++) {
           const a = Math.random() * Math.PI * 2;
           const sp = 1 + Math.random() * 6;
           particlesRef.current.push({ x: f.x, y: f.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2, life: 1, decay: 0.02 + Math.random() * 0.02, radius: 3 + Math.random() * 5, color: '#ef4444' });
         }
         scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: '−5 💣', color: '#f87171', vy: -2.5, life: 1 });
+
+      } else if (f.fruitIdx === -2) {
+        // Freeze powerup — freezes opponent's fruits
+        const expiresAt = performance.now() + 4000;
+        freezeUntilRef.current = expiresAt;
+        setActivePowerup({ type: 'freeze', expiresAt });
+        // Notify opponent via socket
+        const s = socketRef.current; const w2 = walletRef.current;
+        if (s && w2) s.emit('sliceduel_powerup', { matchId: matchIdRef.current, wallet: w2, type: 'freeze' });
+        for (let i = 0; i < 20; i++) {
+          const a = Math.random() * Math.PI * 2;
+          particlesRef.current.push({ x: f.x, y: f.y, vx: Math.cos(a) * (2 + Math.random() * 5), vy: Math.sin(a) * (2 + Math.random() * 5) - 2, life: 1, decay: 0.018 + Math.random() * 0.02, radius: 3 + Math.random() * 6, color: 'rgba(99,179,237,0.9)' });
+        }
+        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: '❄️ FREEZE!', color: '#63b3ed', vy: -2.5, life: 1 });
+
+      } else if (f.fruitIdx === -3) {
+        // Score multiplier — 2× points for 5s
+        const expiresAt = performance.now() + 5000;
+        multiplierUntilRef.current = expiresAt;
+        setActivePowerup({ type: 'multiplier', expiresAt });
+        for (let i = 0; i < 20; i++) {
+          const a = Math.random() * Math.PI * 2;
+          particlesRef.current.push({ x: f.x, y: f.y, vx: Math.cos(a) * (2 + Math.random() * 5), vy: Math.sin(a) * (2 + Math.random() * 5) - 2, life: 1, decay: 0.018 + Math.random() * 0.02, radius: 3 + Math.random() * 6, color: 'rgba(251,191,36,0.9)' });
+        }
+        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: '⭐ 2× POINTS!', color: '#fbbf24', vy: -2.5, life: 1 });
+
       } else {
         const fruit = FRUITS[f.fruitIdx];
+        const hasMult = performance.now() < multiplierUntilRef.current;
         const isCombo = comboRef.current >= 3;
-        const pts = fruit.points * (isCombo ? 2 : 1);
+        const pts = fruit.points * (isCombo ? 2 : 1) * (hasMult ? 2 : 1);
         scoreRef.current += pts;
         setScore(scoreRef.current);
+        // Emit score on every slice for live HUD updates
+        const s2 = socketRef.current; const w3 = walletRef.current;
+        if (s2 && w3) s2.emit('sliceduel_score_update', { matchId: matchIdRef.current, wallet: w3, score: scoreRef.current });
         comboRef.current++;
         setCombo(comboRef.current);
         if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
         comboTimerRef.current = setTimeout(() => { comboRef.current = 0; setCombo(0); }, 1800);
 
         spawnParticles(f.x, f.y, fruit.juiceColor, sliceAngle);
-        const label = isCombo ? `+${pts} 🔥×2` : `+${pts}`;
-        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: label, color: isCombo ? '#fbbf24' : fruit.color, vy: -2.5, life: 1 });
+
+        // Juice stain — organic bezier splat + teardrop droplets
+        const blobCount = 8 + Math.floor(Math.random() * 5);
+        const baseR = 30 + Math.random() * 22;
+        const blobs = Array.from({ length: blobCount }, (_, i) => {
+          const angle = (i / blobCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+          const r = baseR * (0.55 + Math.random() * 0.65);
+          return { dx: Math.cos(angle) * r, dy: Math.sin(angle) * r, r };
+        });
+        const drops = Array.from({ length: 5 + Math.floor(Math.random() * 6) }, () => {
+          const angle = Math.random() * Math.PI * 2;
+          const dist = baseR * (1.1 + Math.random() * 1.2);
+          return {
+            dx: Math.cos(angle) * dist,
+            dy: Math.sin(angle) * dist,
+            r: 4 + Math.random() * 10,
+            angle: angle + Math.PI / 2,
+            stretch: 1.2 + Math.random() * 1.0,
+          };
+        });
+        stainsRef.current.push({ x: f.x, y: f.y, r: baseR, color: fruit.juiceColor, alpha: 0.12 + Math.random() * 0.06, blobs, drops, spawnedAt: performance.now() });
+        if (stainsRef.current.length > 30) stainsRef.current.shift();
+        const label = hasMult && isCombo ? `+${pts} 🔥⭐` : hasMult ? `+${pts} ⭐` : isCombo ? `+${pts} 🔥×2` : `+${pts}`;
+        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: label, color: hasMult ? '#fbbf24' : isCombo ? '#fbbf24' : fruit.color, vy: -2.5, life: 1 });
       }
     }
-  }, [phase, spawnParticles]);
+  }, [spawnParticles]);
 
   const onPointerDown = useCallback((x: number, y: number) => {
     isSlicingRef.current = true;
@@ -715,7 +913,7 @@ export default function SliceDuel() {
     const now = performance.now();
     trailRef.current.push({ x, y, t: now });
     if (trailRef.current.length > TRAIL_MAX) trailRef.current.shift();
-    if (!isSlicingRef.current || !lastPointerRef.current) { lastPointerRef.current = { x, y }; return; }
+    if (!lastPointerRef.current) { lastPointerRef.current = { x, y }; return; }
     handleSlice(lastPointerRef.current.x, lastPointerRef.current.y, x, y, now);
     lastPointerRef.current = { x, y };
   }, [handleSlice]);
@@ -726,34 +924,40 @@ export default function SliceDuel() {
   }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (phase !== 'playing') return;
+    if (phaseRef.current !== 'playing') return;
     const { x, y } = getCanvasPos(e);
     onPointerDown(x, y);
-  }, [phase, onPointerDown]);
+  }, [onPointerDown]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (phase !== 'playing') return;
+    if (phaseRef.current !== 'playing') return;
     const { x, y } = getCanvasPos(e);
     onPointerMove(x, y);
-  }, [phase, onPointerMove]);
+  }, [onPointerMove]);
+
+  const handleMouseLeave = useCallback(() => {
+    // Clear last pointer so trail doesn't jump on re-entry
+    lastPointerRef.current = null;
+    trailRef.current = [];
+  }, []);
 
   const handleMouseUp = useCallback(() => onPointerUp(), [onPointerUp]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (phase !== 'playing') return;
+    if (phaseRef.current !== 'playing') return;
     e.preventDefault();
     const t = e.touches[0];
     const { x, y } = getCanvasPos(t);
     onPointerDown(x, y);
-  }, [phase, onPointerDown]);
+  }, [onPointerDown]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (phase !== 'playing') return;
+    if (phaseRef.current !== 'playing') return;
     e.preventDefault();
     const t = e.touches[0];
     const { x, y } = getCanvasPos(t);
     onPointerMove(x, y);
-  }, [phase, onPointerMove]);
+  }, [onPointerMove]);
 
   const handleTouchEnd = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -1119,10 +1323,8 @@ export default function SliceDuel() {
               <canvas
                 ref={canvasRef}
                 style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: phase === 'playing' ? 'none' : 'default', touchAction: 'none' }}
-                onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
+                onMouseLeave={handleMouseLeave}
                 onTouchStart={handleTouchStart}
                 onTouchMove={handleTouchMove}
                 onTouchEnd={handleTouchEnd}

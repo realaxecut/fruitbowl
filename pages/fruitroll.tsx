@@ -335,6 +335,8 @@ export default function FruitRoll() {
       } else {
         setCrateSpinning(false);
         if (res.nextAt) { setCrateAvailable(false); setCrateNextAt(res.nextAt); }
+        // Close modal on error (e.g. Discord not linked, not in server)
+        setShowCrateModal(false);
       }
     });
     // Server-authoritative mod flags
@@ -554,6 +556,19 @@ export default function FruitRoll() {
               fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
               cursor: 'pointer', letterSpacing: '0.01em',
             }}>🍉 FruitRoll</div>
+
+            {/* Slice Duel */}
+            <div
+              onClick={() => router.push('/sliceduel')}
+              style={{
+                height: '100%', display: 'flex', alignItems: 'center', padding: '0 16px',
+                borderBottom: '2px solid transparent', color: 'var(--text-muted)',
+                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
+                cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(229,62,62,0.6)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent'; }}
+            >🔪 Slice Duel</div>
 
             {/* Referrals */}
             <div
@@ -1231,6 +1246,14 @@ export default function FruitRoll() {
                     fontSize: '18px', width: '32px', height: '32px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>×</button>
+                )}
+                {crateSpinning && (
+                  <button onClick={() => { setCrateSpinning(false); setShowCrateModal(false); }} style={{
+                    background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-color)',
+                    borderRadius: '8px', color: 'rgba(255,255,255,0.3)', cursor: 'pointer',
+                    fontSize: '18px', width: '32px', height: '32px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }} title="Cancel">×</button>
                 )}
               </div>
 

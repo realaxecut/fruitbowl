@@ -275,6 +275,21 @@ export default function ReferralPage() {
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent'; }}
             >🍉 FruitRoll</div>
 
+            {/* Slice Duel */}
+            <div
+              onClick={() => router.push('/sliceduel')}
+              style={{
+                height: '100%', display: 'flex', alignItems: 'center',
+                padding: '0 16px',
+                borderBottom: '2px solid transparent',
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
+                cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'rgba(229,62,62,0.6)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; (e.currentTarget as HTMLElement).style.borderBottomColor = 'transparent'; }}
+            >🔪 Slice Duel</div>
+
             {/* Referrals — active */}
             <div style={{
               height: '100%', display: 'flex', alignItems: 'center',
