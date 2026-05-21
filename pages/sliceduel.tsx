@@ -31,7 +31,7 @@ interface Fruit {
   rotation: number;
   rotSpeed: number;
   radius: number;
-  fruitIdx: number;           // -1 = bomb, -2 = freeze, -3 = multiplier
+  fruitIdx: number;           // -1 = bomb, -3 = multiplier
   sliced: boolean;
   sliceAngle: number;
   halfOffset: number;
@@ -104,7 +104,6 @@ function segmentCircle(ax: number, ay: number, bx: number, by: number, cx: numbe
 
 // ── Power-up definitions ────────────────────────────────────────────────────
 const POWERUPS = [
-  { type: 'freeze',     emoji: '❄️',  color: '#63b3ed', label: 'FREEZE!',     duration: 4000 },
   { type: 'multiplier', emoji: '2️⃣✖️', color: '#fbbf24', label: '2× POINTS!', duration: 5000 },
 ] as const;
 type PowerupType = typeof POWERUPS[number]['type'];
@@ -177,8 +176,6 @@ export default function SliceDuel() {
   const phaseRef = useRef<Phase>('lobby');
 
   // Active power-up state (refs so RAF loop can read without stale closures)
-  const freezeUntilRef = useRef<number>(0);      // timestamp when opponent freeze expires
-  const frozenByOpponentUntilRef = useRef<number>(0); // when we are frozen
   const multiplierUntilRef = useRef<number>(0);  // when 2× expires
   const [activePowerup, setActivePowerup] = useState<{ type: PowerupType; expiresAt: number } | null>(null);
 
@@ -238,10 +235,6 @@ export default function SliceDuel() {
       startCountdown();
     });
     s.on('sliceduel_opponent_score', (data: { score: number }) => setOpponentScore(data.score));
-    s.on('sliceduel_opponent_freeze', () => {
-      // Opponent hit our freeze powerup — we get frozen
-      frozenByOpponentUntilRef.current = performance.now() + 4000;
-    });
     s.on('sliceduel_result', (data: {
       winnerWallet: string; yourScore: number; opponentScore: number; payoutLamports: number; isTestCash?: boolean;
     }) => endGame(data));
@@ -392,11 +385,10 @@ export default function SliceDuel() {
     // 70% single, 25% double, 5% triple — Fruit Ninja style
     const count = rng() < 0.05 ? 3 : rng() < 0.3 ? 2 : 1;
     for (let i = 0; i < count; i++) {
-      // Determine fruit type: 5% freeze, 5% multiplier, 6% bomb, rest normal fruit
+      // Determine fruit type: 10% multiplier, 6% bomb, rest normal fruit
       let fruitIdx: number;
       const roll = rng();
-      if (roll < 0.05) fruitIdx = -2;       // freeze
-      else if (roll < 0.10) fruitIdx = -3;  // multiplier
+      if (roll < 0.10) fruitIdx = -3;  // multiplier
       else if (roll < 0.16) fruitIdx = -1;  // bomb
       else fruitIdx = Math.floor(rng() * FRUITS.length);
       const radius = (fruitIdx < 0) ? 28 : 28 + Math.floor(rng() * 14);
@@ -580,14 +572,11 @@ export default function SliceDuel() {
     fruitsRef.current = fruitsRef.current.filter(f => f.opacity > 0 && f.y < h + 120);
     for (const f of fruitsRef.current) {
       if (!f.sliced) {
-        // Physics — halted if frozen by opponent
-        const frozen = now < frozenByOpponentUntilRef.current;
-        if (!frozen) {
-          f.x += f.vx;
-          f.y += f.vy;
-          f.vy += GRAVITY;
-          f.rotation += f.rotSpeed;
-        }
+        // Physics
+        f.x += f.vx;
+        f.y += f.vy;
+        f.vy += GRAVITY;
+        f.rotation += f.rotSpeed;
       } else {
         // Halves drift apart and fall faster — Fruit Ninja style
         f.halfOffset += f.halfOffsetSpeed;
@@ -647,28 +636,13 @@ export default function SliceDuel() {
       ctx.fillText(p.text, p.x, p.y);
       ctx.restore();
     }
-    // ── Frozen overlay (when opponent froze us) ─────────────────────────
-    const frozenRemaining = frozenByOpponentUntilRef.current - now;
-    if (frozenRemaining > 0) {
-      ctx.save();
-      ctx.fillStyle = `rgba(99,179,237,${0.18 * Math.min(1, frozenRemaining / 500)})`;
-      ctx.fillRect(0, 0, w, h);
-      // Ice border vignette
-      const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.2, w / 2, h / 2, h * 0.9);
-      vig.addColorStop(0, 'rgba(99,179,237,0)');
-      vig.addColorStop(1, `rgba(99,179,237,${0.35 * Math.min(1, frozenRemaining / 500)})`);
-      ctx.fillStyle = vig;
-      ctx.fillRect(0, 0, w, h);
-      ctx.restore();
-    }
 
     // ── Active power-up circle countdown ────────────────────────────────
     const multRemaining = multiplierUntilRef.current - now;
-    const showCircle = frozenRemaining > 0 || multRemaining > 0;
+    const showCircle = multRemaining > 0;
     if (showCircle) {
-      const isFreeze = frozenRemaining > 0;
-      const remaining = isFreeze ? frozenRemaining : multRemaining;
-      const total = isFreeze ? 4000 : 5000;
+      const remaining = multRemaining;
+      const total = 5000;
       const frac = Math.max(0, remaining / total);
       const cx = w - 54, cy = 54, cr = 28;
 
@@ -681,7 +655,7 @@ export default function SliceDuel() {
       // Progress arc
       ctx.beginPath();
       ctx.arc(cx, cy, cr, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
-      ctx.strokeStyle = isFreeze ? '#63b3ed' : '#fbbf24';
+      ctx.strokeStyle = '#fbbf24';
       ctx.lineWidth = 5;
       ctx.lineCap = 'round';
       ctx.stroke();
@@ -689,7 +663,7 @@ export default function SliceDuel() {
       ctx.font = `${cr * 0.9}px serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(isFreeze ? '❄️' : '⭐', cx, cy);
+      ctx.fillText('⭐', cx, cy);
       // Seconds remaining
       ctx.font = `bold 10px 'Space Grotesk', sans-serif`;
       ctx.fillStyle = '#fff';
@@ -833,20 +807,6 @@ export default function SliceDuel() {
           particlesRef.current.push({ x: f.x, y: f.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2, life: 1, decay: 0.02 + Math.random() * 0.02, radius: 3 + Math.random() * 5, color: '#ef4444' });
         }
         scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: '−5 💣', color: '#f87171', vy: -2.5, life: 1 });
-
-      } else if (f.fruitIdx === -2) {
-        // Freeze powerup — freezes opponent's fruits
-        const expiresAt = performance.now() + 4000;
-        freezeUntilRef.current = expiresAt;
-        setActivePowerup({ type: 'freeze', expiresAt });
-        // Notify opponent via socket
-        const s = socketRef.current; const w2 = walletRef.current;
-        if (s && w2) s.emit('sliceduel_powerup', { matchId: matchIdRef.current, wallet: w2, type: 'freeze' });
-        for (let i = 0; i < 20; i++) {
-          const a = Math.random() * Math.PI * 2;
-          particlesRef.current.push({ x: f.x, y: f.y, vx: Math.cos(a) * (2 + Math.random() * 5), vy: Math.sin(a) * (2 + Math.random() * 5) - 2, life: 1, decay: 0.018 + Math.random() * 0.02, radius: 3 + Math.random() * 6, color: 'rgba(99,179,237,0.9)' });
-        }
-        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: '❄️ FREEZE!', color: '#63b3ed', vy: -2.5, life: 1 });
 
       } else if (f.fruitIdx === -3) {
         // Score multiplier — 2× points for 5s
@@ -1123,18 +1083,9 @@ export default function SliceDuel() {
                   <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MATCH</span>
                   <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '11px', color: timeLeft <= 10 ? '#f87171' : 'var(--orange-soft)', fontWeight: 700 }}>{fmtTime(timeLeft)}</span>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
-                  <div style={{ flex: 1, background: 'rgba(229,62,62,0.1)', border: '1px solid rgba(229,62,62,0.25)', borderRadius: '10px', padding: '10px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, letterSpacing: '0.08em', marginBottom: '4px' }}>YOU</div>
-                    <div style={{ fontSize: '26px', fontFamily: 'var(--font-display)', fontWeight: 800, color: '#fc8181' }}>{score}</div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)', fontSize: '12px', fontWeight: 700 }}>VS</div>
-                  <div style={{ flex: 1, background: 'rgba(72,187,120,0.1)', border: '1px solid rgba(72,187,120,0.2)', borderRadius: '10px', padding: '10px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, letterSpacing: '0.08em', marginBottom: '4px' }}>
-                      {matchedLobby.creatorWallet === wallet ? matchedLobby.opponentName || 'Opponent' : matchedLobby.creatorName}
-                    </div>
-                    <div style={{ fontSize: '26px', fontFamily: 'var(--font-display)', fontWeight: 800, color: '#48bb78' }}>{opponentScore}</div>
-                  </div>
+                <div style={{ background: 'rgba(229,62,62,0.1)', border: '1px solid rgba(229,62,62,0.25)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, letterSpacing: '0.08em', marginBottom: '4px' }}>YOUR SCORE</div>
+                  <div style={{ fontSize: '32px', fontFamily: 'var(--font-display)', fontWeight: 800, color: '#fc8181' }}>{score}</div>
                 </div>
                 {combo >= 2 && (
                   <div style={{ textAlign: 'center', padding: '6px', background: 'rgba(255,140,0,0.12)', border: '1px solid rgba(255,140,0,0.3)', borderRadius: '8px' }}>

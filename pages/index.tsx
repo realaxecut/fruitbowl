@@ -139,6 +139,7 @@ export default function Home() {
   const openCrate = () => {
     if (!crateAvailable || crateSpinning || !wallet || !socket) return;
     if (!discordInGuild) {
+      setShowCrateModal(false); // close crate modal so settings is visible
       setShowSettings(true); // send them to settings to connect Discord
       return;
     }
