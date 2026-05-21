@@ -11,31 +11,55 @@ import SettingsModal from '../components/SettingsModal';
 const HOUSE_WALLET = process.env.NEXT_PUBLIC_HOUSE_WALLET || '';
 const HOUSE_FEE = 0.05;
 
-// ── Fruit definitions ─────────────────────────────────────────────────────────
+// ── Fruit definitions ────────────────────────────────────────────────────────
 const FRUITS = [
-  { emoji: '🍉', name: 'Watermelon', color: '#48bb78', points: 1 },
-  { emoji: '🍊', name: 'Orange',     color: '#ff8c00', points: 2 },
-  { emoji: '🍋', name: 'Lemon',      color: '#f6e05e', points: 2 },
-  { emoji: '🍇', name: 'Grape',      color: '#9f7aea', points: 3 },
-  { emoji: '🍒', name: 'Cherry',     color: '#fc8181', points: 3 },
-  { emoji: '🍍', name: 'Pineapple',  color: '#f59e0b', points: 4 },
-  { emoji: '🍓', name: 'Strawberry', color: '#e53e3e', points: 4 },
+  { emoji: '🍉', name: 'Watermelon', color: '#48bb78', juiceColor: 'rgba(72,187,120,0.8)',  points: 1 },
+  { emoji: '🍊', name: 'Orange',     color: '#ff8c00', juiceColor: 'rgba(255,140,0,0.8)',   points: 2 },
+  { emoji: '🍋', name: 'Lemon',      color: '#f6e05e', juiceColor: 'rgba(246,224,94,0.8)',  points: 2 },
+  { emoji: '🍇', name: 'Grape',      color: '#9f7aea', juiceColor: 'rgba(159,122,234,0.8)', points: 3 },
+  { emoji: '🍒', name: 'Cherry',     color: '#fc8181', juiceColor: 'rgba(252,129,129,0.8)', points: 3 },
+  { emoji: '🍍', name: 'Pineapple',  color: '#f59e0b', juiceColor: 'rgba(245,158,11,0.8)', points: 4 },
+  { emoji: '🍓', name: 'Strawberry', color: '#e53e3e', juiceColor: 'rgba(229,62,62,0.8)',  points: 4 },
 ];
+const BOMB_COLOR = '#1a1a2e';
 
-// Bombs — slicing costs points
-const BOMB_EMOJI = '💣';
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-interface FruitItem {
+// ── Types ────────────────────────────────────────────────────────────────────
+interface Fruit {
   id: number;
-  x: number;        // % across canvas
-  y: number;        // % down canvas
-  vx: number;
-  vy: number;
-  size: number;
-  fruitIdx: number;  // index into FRUITS (-1 = bomb)
+  x: number; y: number;       // px on canvas
+  vx: number; vy: number;     // px/frame
+  rotation: number;
+  rotSpeed: number;
+  radius: number;
+  fruitIdx: number;           // -1 = bomb
   sliced: boolean;
+  sliceAngle: number;         // angle of slash that sliced it
+  halfOffset: number;         // how far halves have separated
+  halfOffsetSpeed: number;
   opacity: number;
+}
+
+interface Particle {
+  x: number; y: number;
+  vx: number; vy: number;
+  life: number;               // 0–1
+  decay: number;
+  radius: number;
+  color: string;
+}
+
+interface TrailPoint {
+  x: number; y: number;
+  t: number; // timestamp ms
+}
+
+interface ScorePopup {
+  id: number;
+  x: number; y: number;
+  text: string;
+  color: string;
+  vy: number;
+  life: number;
 }
 
 interface Lobby {
@@ -47,14 +71,18 @@ interface Lobby {
   status: 'open' | 'matched' | 'playing' | 'ended';
   opponentWallet?: string;
   opponentName?: string;
+  isTestCash?: boolean;
 }
 
 type Phase = 'lobby' | 'countdown' | 'playing' | 'result';
 
 const GAME_DURATION = 60; // seconds
 const QUICK_AMOUNTS = ['0.01', '0.1', '0.5', '1'];
+const GRAVITY = 0.18;        // px/frame² — feels like real Fruit Ninja
+const TRAIL_FADE_MS = 140;   // how long trail points live
+const TRAIL_MAX = 28;
 
-// ── Seeded PRNG (mulberry32) ──────────────────────────────────────────────────
+// ── Seeded PRNG (mulberry32) ─────────────────────────────────────────────────
 function mulberry32(seed: number) {
   return function () {
     seed |= 0; seed = seed + 0x6D2B79F5 | 0;
@@ -64,14 +92,24 @@ function mulberry32(seed: number) {
   };
 }
 
-// ── Main Component ────────────────────────────────────────────────────────────
+// ── Segment–circle intersection ──────────────────────────────────────────────
+function segmentCircle(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, r: number): boolean {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(ax - cx, ay - cy) < r;
+  const t = Math.max(0, Math.min(1, ((cx - ax) * dx + (cy - ay) * dy) / len2));
+  const px = ax + t * dx, py = ay + t * dy;
+  return Math.hypot(px - cx, py - cy) < r;
+}
+
+// ── Main Component ───────────────────────────────────────────────────────────
 export default function SliceDuel() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const router = useRouter();
   const wallet = publicKey?.toBase58() || null;
 
-  // ── Lobby state ───────────────────────────────────────────────────────────
+  // ── Lobby state ──────────────────────────────────────────────────────────
   const [phase, setPhase] = useState<Phase>('lobby');
   const [wagerInput, setWagerInput] = useState('');
   const [openLobbies, setOpenLobbies] = useState<Lobby[]>([]);
@@ -80,19 +118,16 @@ export default function SliceDuel() {
   const [betError, setBetError] = useState('');
   const [betLoading, setBetLoading] = useState(false);
   const [joinLoading, setJoinLoading] = useState<string | null>(null);
-  const [lobbyCountdown, setLobbyCountdown] = useState(300); // 5 min timeout
+  const [lobbyCountdown, setLobbyCountdown] = useState(300);
 
-  // ── Game state ────────────────────────────────────────────────────────────
+  // ── Game HUD state (minimal — canvas handles visuals) ────────────────────
   const [countdown, setCountdown] = useState(3);
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
   const [score, setScore] = useState(0);
   const [opponentScore, setOpponentScore] = useState(0);
-  const [fruits, setFruits] = useState<FruitItem[]>([]);
   const [combo, setCombo] = useState(0);
-  const [comboDisplay, setComboDisplay] = useState<{ val: number; ts: number } | null>(null);
-  const [sliceTrail, setSliceTrail] = useState<{ x: number; y: number }[]>([]);
 
-  // ── Result state ──────────────────────────────────────────────────────────
+  // ── Result state ─────────────────────────────────────────────────────────
   const [playerWon, setPlayerWon] = useState(false);
   const [finalScore, setFinalScore] = useState(0);
   const [finalOpponentScore, setFinalOpponentScore] = useState(0);
@@ -101,29 +136,63 @@ export default function SliceDuel() {
   const [claimTx, setClaimTx] = useState('');
   const [claimError, setClaimError] = useState('');
 
-  // ── Misc ──────────────────────────────────────────────────────────────────
+  // ── Misc ─────────────────────────────────────────────────────────────────
   const [socket, setSocket] = useState<Socket | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [unclaimedTotal, setUnclaimedTotal] = useState(0);
   const [isGameLocked, setIsGameLocked] = useState(false);
+  const [sliceDuelTestCash, setSliceDuelTestCash] = useState(false);
 
+  // ── Canvas & game refs ───────────────────────────────────────────────────
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const gameLoopRef = useRef<number | null>(null);
-  const fruitsRef = useRef<FruitItem[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const fruitsRef = useRef<Fruit[]>([]);
+  const particlesRef = useRef<Particle[]>([]);
+  const trailRef = useRef<TrailPoint[]>([]);
+  const scorePopupsRef = useRef<ScorePopup[]>([]);
   const scoreRef = useRef(0);
   const comboRef = useRef(0);
   const comboTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextIdRef = useRef(0);
+  const popupIdRef = useRef(0);
   const seedRngRef = useRef<(() => number) | null>(null);
+  const rafRef = useRef<number | null>(null);
   const spawnTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const gameTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isMouseDownRef = useRef(false);
-  const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const betTxSigRef = useRef<string | null>(null);
   const matchIdRef = useRef<string | null>(null);
   const wagerLamportsRef = useRef(0);
   const lobbyCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const walletRef = useRef<string | null>(null);
+  const isSlicingRef = useRef(false);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+
+  // ── Independent game timer using performance.now() ───────────────────────
+  // Each client runs its own wall-clock timer — NOT synced via socket.
+  const gameStartTimeRef = useRef<number>(0);
+  const timeLeftRef = useRef(GAME_DURATION);
+
+  // Emoji rendering cache (pre-render to offscreen canvas for perf)
+  const emojiCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+
+  useEffect(() => { walletRef.current = wallet; }, [wallet]);
+  useEffect(() => { socketRef.current = socket; }, [socket]);
+
+  // Pre-render emoji to offscreen canvas
+  const getEmojiCanvas = useCallback((emoji: string, size: number): HTMLCanvasElement => {
+    const key = `${emoji}_${size}`;
+    if (emojiCacheRef.current.has(key)) return emojiCacheRef.current.get(key)!;
+    const c = document.createElement('canvas');
+    c.width = size * 2; c.height = size * 2;
+    const ctx = c.getContext('2d')!;
+    ctx.font = `${size * 1.6}px serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(emoji, size, size);
+    emojiCacheRef.current.set(key, c);
+    return c;
+  }, []);
 
   // ── Socket setup ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -131,14 +200,11 @@ export default function SliceDuel() {
       transports: ['websocket', 'polling'],
     });
 
-    s.on('locked_games', (games: string[]) => {
-      setIsGameLocked(games.includes('sliceduel'));
-    });
-    s.on('unclaimed_wins', (data: { totalLamports: number }) => {
-      setUnclaimedTotal(data.totalLamports || 0);
-    });
+    s.on('locked_games', (games: string[]) => setIsGameLocked(games.includes('sliceduel')));
+    s.on('mod_fruitroll_flags', (flags: any) => setSliceDuelTestCash(!!flags.sliceDuelTestCash));
+    s.on('unclaimed_wins', (data: { totalLamports: number }) => setUnclaimedTotal(data.totalLamports || 0));
     s.on('sliceduel_lobbies', (lobbies: Lobby[]) => {
-      setOpenLobbies(lobbies.filter(l => l.status === 'open' && l.creatorWallet !== wallet));
+      setOpenLobbies(lobbies.filter(l => l.status === 'open' && l.creatorWallet !== walletRef.current));
     });
     s.on('sliceduel_lobby_created', (lobby: Lobby) => {
       setMyLobby(lobby);
@@ -152,18 +218,10 @@ export default function SliceDuel() {
       clearLobbyCountdown();
       startCountdown();
     });
-    s.on('sliceduel_opponent_score', (data: { score: number }) => {
-      setOpponentScore(data.score);
-    });
+    s.on('sliceduel_opponent_score', (data: { score: number }) => setOpponentScore(data.score));
     s.on('sliceduel_result', (data: {
-      winnerWallet: string;
-      yourScore: number;
-      opponentScore: number;
-      payoutLamports: number;
-      claimId?: string;
-    }) => {
-      endGame(data);
-    });
+      winnerWallet: string; yourScore: number; opponentScore: number; payoutLamports: number; isTestCash?: boolean;
+    }) => endGame(data));
     s.on('sliceduel_lobby_expired', () => {
       clearLobbyCountdown();
       setMyLobby(null);
@@ -174,13 +232,14 @@ export default function SliceDuel() {
     if (wallet) {
       s.emit('get_unclaimed_wins', { wallet });
       s.emit('sliceduel_get_lobbies');
+      s.emit('get_mod_fruitroll_flags', { wallet });
     }
 
     setSocket(s);
+    socketRef.current = s;
     return () => { s.disconnect(); };
   }, [wallet]);
 
-  // Refresh display name from localStorage
   useEffect(() => {
     if (wallet) {
       const stored = localStorage.getItem(`username_${wallet}`);
@@ -188,12 +247,9 @@ export default function SliceDuel() {
     }
   }, [wallet]);
 
-  // ── Lobby countdown ───────────────────────────────────────────────────────
+  // ── Lobby countdown ──────────────────────────────────────────────────────
   const clearLobbyCountdown = useCallback(() => {
-    if (lobbyCountdownRef.current) {
-      clearInterval(lobbyCountdownRef.current);
-      lobbyCountdownRef.current = null;
-    }
+    if (lobbyCountdownRef.current) { clearInterval(lobbyCountdownRef.current); lobbyCountdownRef.current = null; }
   }, []);
 
   const startLobbyCountdown = useCallback(() => {
@@ -207,26 +263,31 @@ export default function SliceDuel() {
     }, 1000);
   }, [clearLobbyCountdown]);
 
-  // ── Create lobby (send bet tx) ────────────────────────────────────────────
+  // ── Create lobby ─────────────────────────────────────────────────────────
   const handleCreateLobby = async () => {
     if (!wallet || !publicKey || !socket) return;
     setBetError('');
-    if (!HOUSE_WALLET) { setBetError('House wallet not configured.'); return; }
     const sol = parseFloat(wagerInput);
-    if (isNaN(sol) || sol < 0.01) { setBetError('Minimum wager is 0.01 SOL'); return; }
+    if (isNaN(sol) || sol < 0.001) { setBetError('Minimum wager is 0.001 SOL'); return; }
     setBetLoading(true);
+
+    if (sliceDuelTestCash) {
+      const lamports = Math.floor(sol * LAMPORTS_PER_SOL);
+      betTxSigRef.current = 'TEST_CASH';
+      wagerLamportsRef.current = lamports;
+      socket.emit('sliceduel_create_lobby', { wallet, displayName: displayName || wallet.slice(0, 8), wagerLamports: lamports, txSignature: 'TEST_CASH' });
+      setBetLoading(false);
+      return;
+    }
+
+    if (!HOUSE_WALLET) { setBetError('House wallet not configured.'); setBetLoading(false); return; }
     try {
       const lamports = Math.floor(sol * LAMPORTS_PER_SOL);
       const balance = await connection.getBalance(publicKey);
       if (lamports + 5000 > balance) { setBetError('Insufficient balance.'); setBetLoading(false); return; }
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-      const tx = new Transaction().add(SystemProgram.transfer({
-        fromPubkey: publicKey,
-        toPubkey: new PublicKey(HOUSE_WALLET),
-        lamports,
-      }));
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = publicKey;
+      const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: publicKey, toPubkey: new PublicKey(HOUSE_WALLET), lamports }));
+      tx.recentBlockhash = blockhash; tx.feePayer = publicKey;
       const sig = await sendTransaction(tx, connection, { skipPreflight: false, preflightCommitment: 'confirmed' });
       setBetError('⏳ Confirming...');
       let confirmed = false;
@@ -243,35 +304,31 @@ export default function SliceDuel() {
       setBetError('');
       betTxSigRef.current = sig;
       wagerLamportsRef.current = lamports;
-      socket.emit('sliceduel_create_lobby', {
-        wallet,
-        displayName: displayName || wallet.slice(0, 8),
-        wagerLamports: lamports,
-        txSignature: sig,
-      });
-    } catch (e: any) {
-      setBetError(e.message?.includes('rejected') ? 'Cancelled.' : e.message || 'Failed.');
-    }
+      socket.emit('sliceduel_create_lobby', { wallet, displayName: displayName || wallet.slice(0, 8), wagerLamports: lamports, txSignature: sig });
+    } catch (e: any) { setBetError(e.message?.includes('rejected') ? 'Cancelled.' : e.message || 'Failed.'); }
     setBetLoading(false);
   };
 
-  // ── Join lobby ────────────────────────────────────────────────────────────
+  // ── Join lobby ───────────────────────────────────────────────────────────
   const handleJoinLobby = async (lobby: Lobby) => {
     if (!wallet || !publicKey || !socket) return;
-    setJoinLoading(lobby.id);
-    setBetError('');
+    setJoinLoading(lobby.id); setBetError('');
+
+    if (lobby.isTestCash) {
+      betTxSigRef.current = 'TEST_CASH';
+      wagerLamportsRef.current = lobby.wagerLamports;
+      socket.emit('sliceduel_join_lobby', { lobbyId: lobby.id, wallet, displayName: displayName || wallet.slice(0, 8), txSignature: 'TEST_CASH' });
+      setJoinLoading(null);
+      return;
+    }
+
     try {
       const lamports = lobby.wagerLamports;
       const balance = await connection.getBalance(publicKey);
       if (lamports + 5000 > balance) { setBetError('Insufficient balance.'); setJoinLoading(null); return; }
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-      const tx = new Transaction().add(SystemProgram.transfer({
-        fromPubkey: publicKey,
-        toPubkey: new PublicKey(HOUSE_WALLET),
-        lamports,
-      }));
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = publicKey;
+      const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: publicKey, toPubkey: new PublicKey(HOUSE_WALLET), lamports }));
+      tx.recentBlockhash = blockhash; tx.feePayer = publicKey;
       const sig = await sendTransaction(tx, connection, { skipPreflight: false, preflightCommitment: 'confirmed' });
       setBetError('⏳ Confirming...');
       let confirmed = false;
@@ -286,263 +343,451 @@ export default function SliceDuel() {
       setBetError('');
       betTxSigRef.current = sig;
       wagerLamportsRef.current = lamports;
-      socket.emit('sliceduel_join_lobby', {
-        lobbyId: lobby.id,
-        wallet,
-        displayName: displayName || wallet.slice(0, 8),
-        txSignature: sig,
-      });
-    } catch (e: any) {
-      setBetError(e.message?.includes('rejected') ? 'Cancelled.' : e.message || 'Failed.');
-    }
+      socket.emit('sliceduel_join_lobby', { lobbyId: lobby.id, wallet, displayName: displayName || wallet.slice(0, 8), txSignature: sig });
+    } catch (e: any) { setBetError(e.message?.includes('rejected') ? 'Cancelled.' : e.message || 'Failed.'); }
     setJoinLoading(null);
   };
 
-  // ── Countdown to game start ───────────────────────────────────────────────
+  // ── Countdown ────────────────────────────────────────────────────────────
   const startCountdown = useCallback(() => {
     setPhase('countdown');
     setCountdown(3);
     let c = 3;
-    const interval = setInterval(() => {
+    const iv = setInterval(() => {
       c--;
       setCountdown(c);
-      if (c <= 0) {
-        clearInterval(interval);
-        startGame();
-      }
+      if (c <= 0) { clearInterval(iv); startGame(); }
     }, 1000);
   }, []);
 
-  // ── Game loop ─────────────────────────────────────────────────────────────
+  // ── Spawn helper ─────────────────────────────────────────────────────────
+  const spawnFruit = useCallback((canvas: HTMLCanvasElement) => {
+    const rng = seedRngRef.current;
+    if (!rng) return;
+    const w = canvas.width;
+    const count = rng() < 0.25 ? (rng() < 0.4 ? 3 : 2) : 1;
+    for (let i = 0; i < count; i++) {
+      const isBomb = rng() < 0.07;
+      const fruitIdx = isBomb ? -1 : Math.floor(rng() * FRUITS.length);
+      const radius = isBomb ? 26 : 22 + Math.floor(rng() * 16);
+      // Launch from bottom, spread across width
+      const x = radius * 2 + rng() * (w - radius * 4);
+      const vy = -(10 + rng() * 7);   // upward
+      const vx = (rng() - 0.5) * 5;
+      fruitsRef.current.push({
+        id: nextIdRef.current++,
+        x, y: canvas.height + radius,
+        vx, vy,
+        rotation: rng() * Math.PI * 2,
+        rotSpeed: (rng() - 0.5) * 0.12,
+        radius,
+        fruitIdx,
+        sliced: false,
+        sliceAngle: 0,
+        halfOffset: 0,
+        halfOffsetSpeed: 0,
+        opacity: 1,
+      });
+    }
+  }, []);
+
+  // ── Juice particles on slice ─────────────────────────────────────────────
+  const spawnParticles = useCallback((x: number, y: number, color: string, sliceAngle: number) => {
+    const count = 12 + Math.floor(Math.random() * 8);
+    for (let i = 0; i < count; i++) {
+      // Particles spray perpendicular to slice direction
+      const baseAngle = sliceAngle + Math.PI / 2 + (Math.random() - 0.5) * Math.PI;
+      const speed = 2 + Math.random() * 5;
+      particlesRef.current.push({
+        x, y,
+        vx: Math.cos(baseAngle) * speed,
+        vy: Math.sin(baseAngle) * speed - 1,
+        life: 1,
+        decay: 0.025 + Math.random() * 0.03,
+        radius: 2 + Math.random() * 4,
+        color,
+      });
+    }
+  }, []);
+
+  // ── Canvas render loop ───────────────────────────────────────────────────
+  const renderFrame = useCallback((canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, now: number) => {
+    const w = canvas.width;
+    const h = canvas.height;
+
+    // Clear
+    ctx.clearRect(0, 0, w, h);
+
+    // Background gradient
+    const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
+    bg.addColorStop(0, '#1a0d2e');
+    bg.addColorStop(1, '#0a0510');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // ── Draw slice trail ─────────────────────────────────────────────────
+    const trail = trailRef.current.filter(p => now - p.t < TRAIL_FADE_MS);
+    trailRef.current = trail;
+    if (trail.length > 1) {
+      for (let i = 1; i < trail.length; i++) {
+        const age0 = (now - trail[i - 1].t) / TRAIL_FADE_MS;
+        const age1 = (now - trail[i].t) / TRAIL_FADE_MS;
+        const alpha = Math.max(0, 1 - Math.max(age0, age1));
+        const thickness = (1 - Math.max(age0, age1)) * 4 + 1;
+
+        // Glow pass
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.strokeStyle = `rgba(255,240,180,${alpha * 0.25})`;
+        ctx.lineWidth = thickness * 4;
+        ctx.lineCap = 'round';
+        ctx.filter = 'blur(4px)';
+        ctx.stroke();
+        ctx.restore();
+
+        // Core
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.strokeStyle = `rgba(255,245,200,${alpha})`;
+        ctx.lineWidth = thickness;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+    }
+
+    // ── Draw particles ───────────────────────────────────────────────────
+    particlesRef.current = particlesRef.current.filter(p => p.life > 0);
+    for (const p of particlesRef.current) {
+      p.x += p.vx; p.y += p.vy; p.vy += 0.15;
+      p.life -= p.decay;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * p.life, 0, Math.PI * 2);
+      ctx.fillStyle = p.color.replace(')', `,${p.life})`).replace('rgb', 'rgba').replace('rgba(', 'rgba(');
+      // Safer color injection:
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // ── Draw fruits ──────────────────────────────────────────────────────
+    fruitsRef.current = fruitsRef.current.filter(f => f.opacity > 0 && f.y < h + 120);
+    for (const f of fruitsRef.current) {
+      if (!f.sliced) {
+        // Physics
+        f.x += f.vx;
+        f.y += f.vy;
+        f.vy += GRAVITY;
+        f.rotation += f.rotSpeed;
+      } else {
+        // Halves drift apart and fall faster
+        f.halfOffset += f.halfOffsetSpeed;
+        f.halfOffsetSpeed += 0.3;
+        f.vy += GRAVITY * 1.5;
+        f.y += f.vy * 0.5;
+        f.opacity -= 0.025;
+        f.rotation += f.rotSpeed * 2;
+      }
+
+      const emoji = f.fruitIdx === -1 ? '💣' : FRUITS[f.fruitIdx].emoji;
+      const diameter = f.radius * 2;
+      const ec = getEmojiCanvas(emoji, f.radius);
+
+      if (!f.sliced) {
+        ctx.save();
+        ctx.translate(f.x, f.y);
+        ctx.rotate(f.rotation);
+        ctx.globalAlpha = f.opacity;
+        // Glow
+        if (f.fruitIdx >= 0) {
+          ctx.shadowColor = FRUITS[f.fruitIdx].color;
+          ctx.shadowBlur = 12;
+        }
+        ctx.drawImage(ec, -f.radius, -f.radius, diameter, diameter);
+        ctx.restore();
+      } else {
+        // Draw two halves separating perpendicular to slice angle
+        const perpX = Math.cos(f.sliceAngle + Math.PI / 2);
+        const perpY = Math.sin(f.sliceAngle + Math.PI / 2);
+        const offset = f.halfOffset;
+
+        for (const sign of [-1, 1]) {
+          ctx.save();
+          ctx.translate(f.x + perpX * offset * sign, f.y + perpY * offset * sign);
+          ctx.rotate(f.rotation + sign * 0.3);
+          ctx.globalAlpha = f.opacity;
+          // Clip to half
+          ctx.beginPath();
+          const clipAngle = f.sliceAngle + (sign === 1 ? 0 : Math.PI);
+          ctx.arc(0, 0, f.radius * 1.2, clipAngle, clipAngle + Math.PI);
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(ec, -f.radius, -f.radius, diameter, diameter);
+          ctx.restore();
+        }
+      }
+    }
+
+    // ── Score popups ─────────────────────────────────────────────────────
+    scorePopupsRef.current = scorePopupsRef.current.filter(p => p.life > 0);
+    for (const p of scorePopupsRef.current) {
+      p.y += p.vy;
+      p.vy *= 0.95;
+      p.life -= 0.018;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, p.life * 3);
+      ctx.font = `bold ${18 + (1 - p.life) * 4}px 'Space Grotesk', sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillText(p.text, p.x, p.y);
+      ctx.restore();
+    }
+  }, [getEmojiCanvas]);
+
+  // ── Start game ───────────────────────────────────────────────────────────
   const startGame = useCallback(() => {
     scoreRef.current = 0;
     comboRef.current = 0;
     fruitsRef.current = [];
+    particlesRef.current = [];
+    trailRef.current = [];
+    scorePopupsRef.current = [];
     setScore(0);
     setOpponentScore(0);
-    setFruits([]);
     setCombo(0);
     setTimeLeft(GAME_DURATION);
+    timeLeftRef.current = GAME_DURATION;
     setPhase('playing');
 
-    // Spawn fruits on a timer driven by the seeded RNG
-    spawnTimerRef.current = setInterval(() => {
-      const rng = seedRngRef.current;
-      if (!rng) return;
-      const count = Math.random() < 0.3 ? 2 : 1;
-      const newFruits: FruitItem[] = [];
-      for (let i = 0; i < count; i++) {
-        const isBomb = rng() < 0.08;
-        const fruitIdx = isBomb ? -1 : Math.floor(rng() * FRUITS.length);
-        const baseSize = isBomb ? 34 : 28 + Math.floor(rng() * 18);
-        newFruits.push({
-          id: nextIdRef.current++,
-          x: 10 + rng() * 80,
-          y: 105,
-          vx: (rng() - 0.5) * 2.5,
-          vy: -(8 + rng() * 6),
-          size: baseSize,
-          fruitIdx,
-          sliced: false,
-          opacity: 1,
-        });
-      }
-      fruitsRef.current = [...fruitsRef.current, ...newFruits];
-      setFruits([...fruitsRef.current]);
-    }, 600);
+    // Wall-clock game start — independent per client, no sync
+    gameStartTimeRef.current = performance.now();
 
-    // Physics loop
-    const animate = () => {
-      fruitsRef.current = fruitsRef.current
-        .map(f => {
-          if (f.sliced) return { ...f, opacity: Math.max(0, f.opacity - 0.08) };
-          return {
-            ...f,
-            x: f.x + f.vx * 0.6,
-            y: f.y + f.vy * 0.6,
-            vy: f.vy + 0.25,
-          };
-        })
-        .filter(f => !(f.y > 115 && !f.sliced) && !(f.sliced && f.opacity <= 0));
-      setFruits([...fruitsRef.current]);
-      gameLoopRef.current = requestAnimationFrame(animate);
-    };
-    gameLoopRef.current = requestAnimationFrame(animate);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
 
-    // Game timer
-    let t = GAME_DURATION;
-    gameTimerRef.current = setInterval(() => {
-      t--;
-      setTimeLeft(t);
-      // Report score to server every 5 seconds
-      if (t % 5 === 0 && socket && wallet) {
-        socket.emit('sliceduel_score_update', { matchId: matchIdRef.current, wallet, score: scoreRef.current });
+    // Spawn interval — uses seeded RNG for fruit type/position, wall clock for timing
+    const spawnInterval = 700; // ms between spawn events
+    let lastSpawn = performance.now();
+
+    // HUD timer — separate setInterval, purely cosmetic
+    const hudTimer = setInterval(() => {
+      const elapsed = (performance.now() - gameStartTimeRef.current) / 1000;
+      const tl = Math.max(0, GAME_DURATION - elapsed);
+      timeLeftRef.current = tl;
+      setTimeLeft(Math.ceil(tl));
+
+      // Report score every 5s
+      const soc = socketRef.current;
+      const w = walletRef.current;
+      if (soc && w && Math.ceil(tl) % 5 === 0) {
+        soc.emit('sliceduel_score_update', { matchId: matchIdRef.current, wallet: w, score: scoreRef.current });
       }
-      if (t <= 0) {
-        clearInterval(gameTimerRef.current!);
+
+      if (tl <= 0) {
+        clearInterval(hudTimer);
+        // Stop spawn
+        if (spawnTimerRef.current) { clearInterval(spawnTimerRef.current); spawnTimerRef.current = null; }
         stopGame();
       }
-    }, 1000);
-  }, [socket, wallet]);
+    }, 200); // poll at 5Hz for smooth timer, not synced to frame
+
+    // RAF loop
+    let animRunning = true;
+    const loop = (now: number) => {
+      if (!animRunning) return;
+
+      // Spawn fruits based on wall clock, not frame count
+      if (now - lastSpawn > spawnInterval) {
+        lastSpawn = now;
+        if (timeLeftRef.current > 0) spawnFruit(canvas);
+      }
+
+      renderFrame(canvas, ctx, now);
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+
+    // Cleanup RAF when component unmounts or game ends
+    return () => { animRunning = false; clearInterval(hudTimer); };
+  }, [spawnFruit, renderFrame]);
 
   const stopGame = useCallback(() => {
-    if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
-    if (spawnTimerRef.current) clearInterval(spawnTimerRef.current);
-    if (socket && wallet) {
-      socket.emit('sliceduel_game_end', { matchId: matchIdRef.current, wallet, score: scoreRef.current });
-    }
-  }, [socket, wallet]);
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    if (spawnTimerRef.current) { clearInterval(spawnTimerRef.current); spawnTimerRef.current = null; }
+    const s = socketRef.current; const w = walletRef.current;
+    if (s && w) s.emit('sliceduel_game_end', { matchId: matchIdRef.current, wallet: w, score: scoreRef.current });
+  }, []);
 
   const endGame = useCallback((data: { winnerWallet: string; yourScore: number; opponentScore: number; payoutLamports: number }) => {
-    if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
-    if (spawnTimerRef.current) clearInterval(spawnTimerRef.current);
-    if (gameTimerRef.current) clearInterval(gameTimerRef.current);
-    const won = data.winnerWallet === wallet;
-    setPlayerWon(won);
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    if (spawnTimerRef.current) { clearInterval(spawnTimerRef.current); spawnTimerRef.current = null; }
+    setPlayerWon(data.winnerWallet === walletRef.current);
     setFinalScore(data.yourScore);
     setFinalOpponentScore(data.opponentScore);
     setPayoutAmount(data.payoutLamports);
     setPhase('result');
-  }, [wallet]);
+  }, []);
 
-  useEffect(() => {
-    return () => {
-      if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
-      if (spawnTimerRef.current) clearInterval(spawnTimerRef.current);
-      if (gameTimerRef.current) clearInterval(gameTimerRef.current);
-      clearLobbyCountdown();
-    };
+  useEffect(() => () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (spawnTimerRef.current) clearInterval(spawnTimerRef.current);
+    clearLobbyCountdown();
   }, [clearLobbyCountdown]);
 
-  // ── Slice detection ───────────────────────────────────────────────────────
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (phase !== 'playing') return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mx = ((e.clientX - rect.left) / rect.width) * 100;
-    const my = ((e.clientY - rect.top) / rect.height) * 100;
-
-    setSliceTrail(prev => [...prev.slice(-8), { x: mx, y: my }]);
-
-    if (!isMouseDownRef.current) return;
-    const last = lastMouseRef.current;
-    if (!last) { lastMouseRef.current = { x: mx, y: my }; return; }
-
-    // Check each fruit for collision with slice line
-    let hitAny = false;
-    fruitsRef.current = fruitsRef.current.map(f => {
-      if (f.sliced) return f;
-      const dx = f.x - mx;
-      const dy = f.y - my;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < f.size * 0.7) {
-        hitAny = true;
-        if (f.fruitIdx === -1) {
-          // bomb
-          scoreRef.current = Math.max(0, scoreRef.current - 5);
-          setScore(scoreRef.current);
-          comboRef.current = 0;
-          setCombo(0);
-        } else {
-          const pts = FRUITS[f.fruitIdx].points;
-          const multiplier = comboRef.current >= 3 ? 2 : 1;
-          scoreRef.current += pts * multiplier;
-          setScore(scoreRef.current);
-          comboRef.current++;
-          setCombo(comboRef.current);
-          if (comboRef.current >= 3) {
-            setComboDisplay({ val: comboRef.current, ts: Date.now() });
-          }
-          if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
-          comboTimerRef.current = setTimeout(() => {
-            comboRef.current = 0;
-            setCombo(0);
-          }, 2000);
-        }
-        return { ...f, sliced: true };
-      }
-      return f;
-    });
-    setFruits([...fruitsRef.current]);
-    lastMouseRef.current = { x: mx, y: my };
-  }, [phase]);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (phase !== 'playing') return;
-    isMouseDownRef.current = true;
-    const rect = e.currentTarget.getBoundingClientRect();
-    lastMouseRef.current = {
-      x: ((e.clientX - rect.left) / rect.width) * 100,
-      y: ((e.clientY - rect.top) / rect.height) * 100,
+  // ── Canvas resize ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+    const resize = () => {
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
     };
-  }, [phase]);
-
-  const handleMouseUp = useCallback(() => {
-    isMouseDownRef.current = false;
-    lastMouseRef.current = null;
-    setSliceTrail([]);
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+    return () => ro.disconnect();
   }, []);
 
-  // Touch events
-  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+  // ── Pointer handling ─────────────────────────────────────────────────────
+  const getCanvasPos = (e: { clientX: number; clientY: number }) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const handleSlice = useCallback((ax: number, ay: number, bx: number, by: number, now: number) => {
+    if (phase !== 'playing') return;
+    const sliceAngle = Math.atan2(by - ay, bx - ax);
+
+    for (const f of fruitsRef.current) {
+      if (f.sliced) continue;
+      if (!segmentCircle(ax, ay, bx, by, f.x, f.y, f.radius * 0.85)) continue;
+
+      f.sliced = true;
+      f.sliceAngle = sliceAngle;
+      f.halfOffsetSpeed = 1.5;
+
+      if (f.fruitIdx === -1) {
+        // Bomb
+        scoreRef.current = Math.max(0, scoreRef.current - 5);
+        setScore(scoreRef.current);
+        comboRef.current = 0;
+        setCombo(0);
+        // Red particles
+        for (let i = 0; i < 18; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const sp = 1 + Math.random() * 6;
+          particlesRef.current.push({ x: f.x, y: f.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2, life: 1, decay: 0.02 + Math.random() * 0.02, radius: 3 + Math.random() * 5, color: '#ef4444' });
+        }
+        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: '−5 💣', color: '#f87171', vy: -2.5, life: 1 });
+      } else {
+        const fruit = FRUITS[f.fruitIdx];
+        const isCombo = comboRef.current >= 3;
+        const pts = fruit.points * (isCombo ? 2 : 1);
+        scoreRef.current += pts;
+        setScore(scoreRef.current);
+        comboRef.current++;
+        setCombo(comboRef.current);
+        if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
+        comboTimerRef.current = setTimeout(() => { comboRef.current = 0; setCombo(0); }, 1800);
+
+        spawnParticles(f.x, f.y, fruit.juiceColor, sliceAngle);
+        const label = isCombo ? `+${pts} 🔥×2` : `+${pts}`;
+        scorePopupsRef.current.push({ id: popupIdRef.current++, x: f.x, y: f.y - 20, text: label, color: isCombo ? '#fbbf24' : fruit.color, vy: -2.5, life: 1 });
+      }
+    }
+  }, [phase, spawnParticles]);
+
+  const onPointerDown = useCallback((x: number, y: number) => {
+    isSlicingRef.current = true;
+    lastPointerRef.current = { x, y };
+    trailRef.current.push({ x, y, t: performance.now() });
+  }, []);
+
+  const onPointerMove = useCallback((x: number, y: number) => {
+    const now = performance.now();
+    trailRef.current.push({ x, y, t: now });
+    if (trailRef.current.length > TRAIL_MAX) trailRef.current.shift();
+    if (!isSlicingRef.current || !lastPointerRef.current) { lastPointerRef.current = { x, y }; return; }
+    handleSlice(lastPointerRef.current.x, lastPointerRef.current.y, x, y, now);
+    lastPointerRef.current = { x, y };
+  }, [handleSlice]);
+
+  const onPointerUp = useCallback(() => {
+    isSlicingRef.current = false;
+    lastPointerRef.current = null;
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (phase !== 'playing') return;
+    const { x, y } = getCanvasPos(e);
+    onPointerDown(x, y);
+  }, [phase, onPointerDown]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (phase !== 'playing') return;
+    const { x, y } = getCanvasPos(e);
+    onPointerMove(x, y);
+  }, [phase, onPointerMove]);
+
+  const handleMouseUp = useCallback(() => onPointerUp(), [onPointerUp]);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
     if (phase !== 'playing') return;
     e.preventDefault();
-    const touch = e.touches[0];
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mx = ((touch.clientX - rect.left) / rect.width) * 100;
-    const my = ((touch.clientY - rect.top) / rect.height) * 100;
-    isMouseDownRef.current = true;
-    const synth = { clientX: touch.clientX, clientY: touch.clientY, currentTarget: e.currentTarget } as any;
-    handleMouseMove({ ...synth, currentTarget: e.currentTarget });
-  }, [phase, handleMouseMove]);
+    const t = e.touches[0];
+    const { x, y } = getCanvasPos(t);
+    onPointerDown(x, y);
+  }, [phase, onPointerDown]);
 
-  const handleTouchEnd = useCallback(() => {
-    isMouseDownRef.current = false;
-    lastMouseRef.current = null;
-    setSliceTrail([]);
-  }, []);
+  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (phase !== 'playing') return;
+    e.preventDefault();
+    const t = e.touches[0];
+    const { x, y } = getCanvasPos(t);
+    onPointerMove(x, y);
+  }, [phase, onPointerMove]);
 
-  // ── Claim payout ──────────────────────────────────────────────────────────
+  const handleTouchEnd = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    onPointerUp();
+  }, [onPointerUp]);
+
+  // ── Claim / Reset ────────────────────────────────────────────────────────
   const handleClaim = () => {
     if (!socket || !wallet || claimState === 'claiming') return;
     setClaimState('claiming');
     socket.emit('sliceduel_claim_payout', { matchId: matchIdRef.current, wallet });
     socket.once('sliceduel_claim_result', (res: { success: boolean; tx?: string; error?: string }) => {
-      if (res.success) {
-        setClaimState('success');
-        setClaimTx(res.tx || '');
-      } else {
-        setClaimState('error');
-        setClaimError(res.error || 'Claim failed.');
-      }
+      if (res.success) { setClaimState('success'); setClaimTx(res.tx || ''); }
+      else { setClaimState('error'); setClaimError(res.error || 'Claim failed.'); }
     });
   };
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
   const resetToLobby = () => {
-    setPhase('lobby');
-    setMyLobby(null);
-    setMatchedLobby(null);
-    setScore(0);
-    setOpponentScore(0);
-    setFruits([]);
-    setCombo(0);
-    setSliceTrail([]);
-    setClaimState('idle');
-    setClaimTx('');
-    setClaimError('');
-    matchIdRef.current = null;
-    betTxSigRef.current = null;
+    setPhase('lobby'); setMyLobby(null); setMatchedLobby(null);
+    setScore(0); setOpponentScore(0); setCombo(0);
+    setClaimState('idle'); setClaimTx(''); setClaimError('');
+    matchIdRef.current = null; betTxSigRef.current = null;
+    fruitsRef.current = []; particlesRef.current = []; trailRef.current = [];
     if (socket && wallet) socket.emit('sliceduel_get_lobbies');
   };
 
-  // ── Format time ───────────────────────────────────────────────────────────
-  const fmtTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const fmtTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(Math.ceil(s) % 60).toString().padStart(2, '0')}`;
   const fmtSol = (l: number) => (l / LAMPORTS_PER_SOL).toFixed(3);
-
   const activeLobbyWager = matchedLobby?.wagerLamports || 0;
   const potSol = activeLobbyWager > 0 ? fmtSol(activeLobbyWager * 2) : '0.000';
   const payoutSol = activeLobbyWager > 0 ? fmtSol(Math.floor(activeLobbyWager * 2 * (1 - HOUSE_FEE))) : '0.000';
 
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <>
       <Head>
@@ -553,18 +798,13 @@ export default function SliceDuel() {
       <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-primary)' }}>
 
         {/* ── HEADER ── */}
-        <header style={{
-          display: 'flex', alignItems: 'center', height: '58px', flexShrink: 0,
-          background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)',
-          padding: '0 20px', gap: '16px',
-        }}>
+        <header style={{ display: 'flex', alignItems: 'center', height: '58px', flexShrink: 0, background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', padding: '0 20px', gap: '16px' }}>
           <div onClick={() => router.push('/')} style={{ display: 'flex', alignItems: 'center', gap: '9px', cursor: 'pointer' }}>
             <span style={{ fontSize: '26px', lineHeight: 1 }}>🍓</span>
             <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '18px', color: '#e53e3e', letterSpacing: '-0.01em' }}>
               FruitBowl<span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>.fun</span>
             </span>
           </div>
-
           <nav style={{ display: 'flex', alignItems: 'center', height: '100%', marginLeft: '8px' }}>
             {[
               { label: '🍊 Orangepot', path: '/' },
@@ -572,48 +812,25 @@ export default function SliceDuel() {
               { label: '🔪 Slice Duel', path: '/sliceduel', active: true },
               { label: '🔗 Referrals', path: '/referral' },
             ].map(item => (
-              <div
-                key={item.path}
-                onClick={() => router.push(item.path)}
-                style={{
-                  height: '100%', display: 'flex', alignItems: 'center', padding: '0 16px',
-                  borderBottom: item.active ? '2px solid #e53e3e' : '2px solid transparent',
-                  color: item.active ? 'var(--text-primary)' : 'var(--text-muted)',
-                  fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px',
-                  cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s, border-color 0.15s',
-                }}
-                onMouseEnter={e => { if (!item.active) { (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; } }}
-                onMouseLeave={e => { if (!item.active) { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; } }}
+              <div key={item.path} onClick={() => router.push(item.path)} style={{ height: '100%', display: 'flex', alignItems: 'center', padding: '0 16px', borderBottom: item.active ? '2px solid #e53e3e' : '2px solid transparent', color: item.active ? 'var(--text-primary)' : 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px', cursor: 'pointer', letterSpacing: '0.01em', transition: 'color 0.15s, border-color 0.15s' }}
+                onMouseEnter={e => { if (!item.active) (e.currentTarget as HTMLElement).style.color = 'var(--text-primary)'; }}
+                onMouseLeave={e => { if (!item.active) (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; }}
               >{item.label}</div>
             ))}
           </nav>
-
           <div style={{ flex: 1 }} />
           {wallet && (
-            <button onClick={() => setShowSettings(true)} style={{
-              background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)',
-              borderRadius: '8px', color: 'var(--text-muted)', cursor: 'pointer',
-              width: '34px', height: '34px', fontSize: '16px',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>⚙️</button>
+            <button onClick={() => setShowSettings(true)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-muted)', cursor: 'pointer', width: '34px', height: '34px', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>⚙️</button>
           )}
           <WalletMultiButton />
         </header>
 
         {/* Unclaimed banner */}
         {wallet && unclaimedTotal > 0 && (
-          <div onClick={() => setShowSettings(true)} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
-            background: 'linear-gradient(90deg,rgba(16,185,129,0.15),rgba(16,185,129,0.08),rgba(16,185,129,0.15))',
-            borderBottom: '1px solid rgba(16,185,129,0.35)', padding: '9px 20px', cursor: 'pointer', flexShrink: 0,
-          }}>
+          <div onClick={() => setShowSettings(true)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: 'linear-gradient(90deg,rgba(16,185,129,0.15),rgba(16,185,129,0.08),rgba(16,185,129,0.15))', borderBottom: '1px solid rgba(16,185,129,0.35)', padding: '9px 20px', cursor: 'pointer', flexShrink: 0 }}>
             <span style={{ fontSize: '16px' }}>💰</span>
-            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: '#10b981' }}>
-              You have <strong>{fmtSol(unclaimedTotal)} SOL</strong> in unclaimed winnings
-            </span>
-            <span style={{ fontSize: '11px', color: 'rgba(16,185,129,0.7)', fontFamily: 'var(--font-display)', fontWeight: 600, textDecoration: 'underline' }}>
-              Claim in Settings →
-            </span>
+            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: '#10b981' }}>You have <strong>{fmtSol(unclaimedTotal)} SOL</strong> in unclaimed winnings</span>
+            <span style={{ fontSize: '11px', color: 'rgba(16,185,129,0.7)', fontFamily: 'var(--font-display)', fontWeight: 600, textDecoration: 'underline' }}>Claim in Settings →</span>
           </div>
         )}
 
@@ -621,11 +838,7 @@ export default function SliceDuel() {
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
           {/* ── LEFT PANEL ── */}
-          <div style={{
-            width: '280px', flexShrink: 0, borderRight: '1px solid var(--border-color)',
-            background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column',
-            overflowY: 'auto', padding: '20px 16px', gap: '14px',
-          }}>
+          <div style={{ width: '280px', flexShrink: 0, borderRight: '1px solid var(--border-color)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', overflowY: 'auto', padding: '20px 16px', gap: '14px' }}>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: '36px', marginBottom: '4px' }}>🔪</div>
               <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '22px', color: 'var(--text-primary)' }}>Slice Duel</div>
@@ -635,67 +848,45 @@ export default function SliceDuel() {
             {/* Wager input */}
             {phase === 'lobby' && !myLobby && (
               <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '14px', padding: '14px' }}>
-                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginBottom: '10px' }}>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   SET WAGER
+                  {sliceDuelTestCash && (
+                    <span style={{ background: 'rgba(6,182,212,0.15)', border: '1px solid rgba(6,182,212,0.4)', color: '#22d3ee', fontSize: '9px', padding: '2px 7px', borderRadius: '5px', letterSpacing: '0.08em', fontWeight: 700 }}>🧪 TEST CASH</span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '0 14px', height: '46px', gap: '10px', marginBottom: '8px' }}>
                   <span style={{ fontSize: '18px' }}>🔪</span>
-                  <input
-                    type="number" value={wagerInput} onChange={e => setWagerInput(e.target.value)}
-                    min="0.01" step="0.01" placeholder="0.1"
-                    style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '17px', outline: 'none', padding: 0 }}
-                  />
+                  <input type="number" value={wagerInput} onChange={e => setWagerInput(e.target.value)}
+                    min="0.001" step="0.001" placeholder="0.1"
+                    style={{ flex: 1, background: 'transparent', border: 'none', color: 'var(--text-primary)', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '17px', outline: 'none', padding: 0 }} />
                   <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace' }}>SOL</span>
                 </div>
                 <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
                   {QUICK_AMOUNTS.map(v => (
-                    <button key={v} onClick={() => setWagerInput(v)} style={{
-                      flex: 1, padding: '5px 0', borderRadius: '6px',
-                      border: wagerInput === v ? '1px solid rgba(229,62,62,0.5)' : '1px solid var(--border-color)',
-                      background: wagerInput === v ? 'rgba(229,62,62,0.12)' : 'rgba(255,255,255,0.03)',
-                      color: wagerInput === v ? '#fc8181' : 'var(--text-muted)',
-                      fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', cursor: 'pointer',
-                    }}>{v}</button>
+                    <button key={v} onClick={() => setWagerInput(v)} style={{ flex: 1, padding: '5px 0', borderRadius: '6px', border: wagerInput === v ? '1px solid rgba(229,62,62,0.5)' : '1px solid var(--border-color)', background: wagerInput === v ? 'rgba(229,62,62,0.12)' : 'rgba(255,255,255,0.03)', color: wagerInput === v ? '#fc8181' : 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', cursor: 'pointer' }}>{v}</button>
                   ))}
                 </div>
-
-                {wagerInput && parseFloat(wagerInput) >= 0.01 && (
+                {wagerInput && parseFloat(wagerInput) >= 0.001 && (
                   <div style={{ fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', marginBottom: '10px', lineHeight: 1.6 }}>
                     Pot: <span style={{ color: 'var(--orange-soft)', fontWeight: 700 }}>◎ {(parseFloat(wagerInput) * 2).toFixed(3)}</span>
                     {' · '}Win: <span style={{ color: '#48bb78', fontWeight: 700 }}>◎ {(parseFloat(wagerInput) * 2 * (1 - HOUSE_FEE)).toFixed(3)}</span>
                   </div>
                 )}
-
                 {isGameLocked && (
                   <div style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '8px', fontSize: '11px', color: '#f87171', fontFamily: 'var(--font-display)', fontWeight: 700, textAlign: 'center', marginBottom: '8px' }}>
                     🔒 GAME LOCKED BY MODERATOR
                   </div>
                 )}
-
+                {betError && (
+                  <div style={{ marginBottom: '8px', fontSize: '11px', color: betError.startsWith('⏳') ? '#fbbf24' : '#f87171', fontFamily: 'var(--font-display)', fontWeight: 600, textAlign: 'center' }}>{betError}</div>
+                )}
                 {!wallet ? (
                   <WalletMultiButton style={{ width: '100%', height: '48px', borderRadius: '10px', fontSize: '13px', fontFamily: 'var(--font-display)', fontWeight: 700 }} />
                 ) : (
-                  <button
-                    onClick={handleCreateLobby}
-                    disabled={betLoading || isGameLocked || !wagerInput}
-                    style={{
-                      width: '100%', height: '48px', borderRadius: '10px', border: 'none',
-                      background: (betLoading || !wagerInput) ? 'rgba(255,255,255,0.07)' : 'linear-gradient(135deg,#c53030,#e53e3e)',
-                      color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px',
-                      cursor: (betLoading || !wagerInput || isGameLocked) ? 'not-allowed' : 'pointer',
-                      opacity: (!wagerInput || isGameLocked) ? 0.5 : 1,
-                      letterSpacing: '0.05em', transition: 'all 0.2s',
-                      boxShadow: wagerInput ? '0 4px 20px rgba(229,62,62,0.4)' : 'none',
-                    }}
-                  >
-                    {betLoading ? '⏳ Confirming...' : '🔪 Create Lobby'}
+                  <button onClick={handleCreateLobby} disabled={betLoading || isGameLocked || !wagerInput}
+                    style={{ width: '100%', height: '48px', borderRadius: '10px', border: 'none', background: (betLoading || !wagerInput) ? 'rgba(255,255,255,0.07)' : 'linear-gradient(135deg,#c53030,#e53e3e)', color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', cursor: (betLoading || !wagerInput || isGameLocked) ? 'not-allowed' : 'pointer', opacity: (!wagerInput || isGameLocked) ? 0.5 : 1, letterSpacing: '0.05em', transition: 'all 0.2s', boxShadow: wagerInput ? '0 4px 20px rgba(229,62,62,0.4)' : 'none' }}>
+                    {betLoading ? '⏳ Confirming...' : sliceDuelTestCash ? '🧪 Create Test Lobby' : '🔪 Create Lobby'}
                   </button>
-                )}
-
-                {betError && (
-                  <div style={{ marginTop: '8px', padding: '8px 12px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', fontSize: '11px', color: '#f87171' }}>
-                    {betError}
-                  </div>
                 )}
               </div>
             )}
@@ -714,10 +905,8 @@ export default function SliceDuel() {
                   <span style={{ color: 'var(--text-muted)' }}>Expires in</span>
                   <span style={{ color: lobbyCountdown < 60 ? '#f87171' : 'var(--text-secondary)', fontWeight: 700 }}>{fmtTime(lobbyCountdown)}</span>
                 </div>
-                <button
-                  onClick={() => { socket?.emit('sliceduel_cancel_lobby', { lobbyId: myLobby.id, wallet }); setMyLobby(null); clearLobbyCountdown(); }}
-                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.04)', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}
-                >
+                <button onClick={() => { socket?.emit('sliceduel_cancel_lobby', { lobbyId: myLobby.id, wallet }); setMyLobby(null); clearLobbyCountdown(); }}
+                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.04)', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}>
                   Cancel & Refund
                 </button>
               </div>
@@ -730,7 +919,6 @@ export default function SliceDuel() {
                   <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '10px', color: 'var(--text-muted)', letterSpacing: '0.1em' }}>MATCH</span>
                   <span style={{ fontFamily: 'Space Mono, monospace', fontSize: '11px', color: timeLeft <= 10 ? '#f87171' : 'var(--orange-soft)', fontWeight: 700 }}>{fmtTime(timeLeft)}</span>
                 </div>
-                {/* Score comparison */}
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
                   <div style={{ flex: 1, background: 'rgba(229,62,62,0.1)', border: '1px solid rgba(229,62,62,0.25)', borderRadius: '10px', padding: '10px', textAlign: 'center' }}>
                     <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'var(--font-display)', fontWeight: 700, letterSpacing: '0.08em', marginBottom: '4px' }}>YOU</div>
@@ -765,7 +953,7 @@ export default function SliceDuel() {
                 {[
                   ['🔪', 'Wager SOL — opponent matches it'],
                   ['🌱', 'Same fruit seed — identical patterns'],
-                  ['⚡', 'Slice fruit fast — avoid bombs 💣'],
+                  ['⚡', 'Swipe through fruit to slice — avoid bombs 💣'],
                   ['🔥', 'Chain slices for 2× combo bonus'],
                   ['🏆', 'Higher score wins 95% of the pot'],
                 ].map(([icon, text]) => (
@@ -802,15 +990,8 @@ export default function SliceDuel() {
 
             {/* Result overlay */}
             {phase === 'result' && (
-              <div style={{ position: 'absolute', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(8px)' }}>
-                <div style={{
-                  textAlign: 'center',
-                  background: 'linear-gradient(145deg,#0d0520,#13082a)',
-                  border: `2px solid ${playerWon ? '#48bb78' : '#ef4444'}`,
-                  borderRadius: '24px', padding: '48px 56px',
-                  boxShadow: `0 0 80px ${playerWon ? 'rgba(72,187,120,0.4)' : 'rgba(239,68,68,0.3)'}`,
-                  minWidth: '360px',
-                }}>
+              <div style={{ position: 'absolute', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)' }}>
+                <div style={{ textAlign: 'center', background: 'linear-gradient(145deg,#0d0520,#13082a)', border: `2px solid ${playerWon ? '#48bb78' : '#ef4444'}`, borderRadius: '24px', padding: '48px 56px', boxShadow: `0 0 80px ${playerWon ? 'rgba(72,187,120,0.4)' : 'rgba(239,68,68,0.3)'}`, minWidth: '360px' }}>
                   <div style={{ fontSize: '64px', marginBottom: '8px' }}>{playerWon ? '🏆' : '😔'}</div>
                   <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '32px', color: playerWon ? '#48bb78' : '#f87171', marginBottom: '8px' }}>
                     {playerWon ? '🎉 YOU WIN!' : 'Better Luck!'}
@@ -825,49 +1006,28 @@ export default function SliceDuel() {
                       <div style={{ fontSize: '28px', fontFamily: 'var(--font-display)', fontWeight: 800, color: '#48bb78' }}>{finalOpponentScore}</div>
                     </div>
                   </div>
-
                   {playerWon && payoutAmount > 0 && (
                     <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '36px', color: '#48bb78', textShadow: '0 0 24px rgba(72,187,120,0.5)', marginBottom: '16px' }}>
                       +{fmtSol(payoutAmount)} ◎
                     </div>
                   )}
-
-                  {/* Claim */}
                   {playerWon && payoutAmount > 0 && (
                     <div style={{ marginBottom: '16px' }}>
                       {claimState === 'success' ? (
                         <div style={{ padding: '12px', background: 'rgba(72,187,120,0.12)', border: '1px solid rgba(72,187,120,0.4)', borderRadius: '12px' }}>
                           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '14px', color: '#48bb78', marginBottom: '4px' }}>✅ Prize Sent!</div>
-                          {claimTx && (
-                            <a href={`https://explorer.solana.com/tx/${claimTx}`} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: '#48bb78', textDecoration: 'underline', fontFamily: 'Space Mono, monospace' }}>View on Explorer ↗</a>
-                          )}
+                          {claimTx && <a href={`https://explorer.solana.com/tx/${claimTx}`} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: '#48bb78', textDecoration: 'underline', fontFamily: 'Space Mono, monospace' }}>View on Explorer ↗</a>}
                         </div>
                       ) : (
-                        <button
-                          onClick={handleClaim}
-                          disabled={claimState === 'claiming'}
-                          style={{
-                            display: 'block', width: '100%', padding: '14px', borderRadius: '12px', border: 'none',
-                            background: claimState === 'claiming' ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg,#48bb78,#38a169)',
-                            color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px',
-                            cursor: claimState === 'claiming' ? 'not-allowed' : 'pointer',
-                            boxShadow: claimState !== 'claiming' ? '0 0 28px rgba(72,187,120,0.4)' : 'none',
-                            letterSpacing: '0.04em',
-                          }}
-                        >
+                        <button onClick={handleClaim} disabled={claimState === 'claiming'}
+                          style={{ display: 'block', width: '100%', padding: '14px', borderRadius: '12px', border: 'none', background: claimState === 'claiming' ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg,#48bb78,#38a169)', color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '16px', cursor: claimState === 'claiming' ? 'not-allowed' : 'pointer', boxShadow: claimState !== 'claiming' ? '0 0 28px rgba(72,187,120,0.4)' : 'none', letterSpacing: '0.04em' }}>
                           {claimState === 'claiming' ? '⏳ Sending...' : `💰 Claim ${fmtSol(payoutAmount)} SOL`}
                         </button>
                       )}
-                      {claimState === 'error' && (
-                        <div style={{ marginTop: '6px', padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', fontSize: '11px', color: '#f87171' }}>{claimError}</div>
-                      )}
+                      {claimState === 'error' && <div style={{ marginTop: '6px', padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', fontSize: '11px', color: '#f87171' }}>{claimError}</div>}
                     </div>
                   )}
-
-                  <button
-                    onClick={resetToLobby}
-                    style={{ padding: '14px 40px', borderRadius: '12px', border: 'none', background: 'linear-gradient(135deg,#c53030,#e53e3e)', color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', cursor: 'pointer', letterSpacing: '0.05em' }}
-                  >🔄 Play Again</button>
+                  <button onClick={resetToLobby} style={{ padding: '14px 40px', borderRadius: '12px', border: 'none', background: 'linear-gradient(135deg,#c53030,#e53e3e)', color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', cursor: 'pointer', letterSpacing: '0.05em' }}>🔄 Play Again</button>
                 </div>
               </div>
             )}
@@ -880,7 +1040,6 @@ export default function SliceDuel() {
                     <span>OPEN LOBBIES</span>
                     <span style={{ padding: '1px 8px', background: 'rgba(229,62,62,0.15)', border: '1px solid rgba(229,62,62,0.3)', borderRadius: '20px', color: '#fc8181', fontSize: '10px' }}>{openLobbies.length}</span>
                   </div>
-
                   {openLobbies.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '60px 20px', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '16px' }}>
                       <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔪</div>
@@ -888,11 +1047,7 @@ export default function SliceDuel() {
                       <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Create one and wait for an opponent, or refresh.</div>
                     </div>
                   ) : openLobbies.map(lobby => (
-                    <div key={lobby.id} style={{
-                      background: 'var(--bg-card)', border: '1px solid var(--border-color)',
-                      borderRadius: '14px', padding: '16px', marginBottom: '10px',
-                      display: 'flex', alignItems: 'center', gap: '16px',
-                    }}>
+                    <div key={lobby.id} style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '14px', padding: '16px', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '16px' }}>
                       <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,rgba(229,62,62,0.3),rgba(229,62,62,0.1))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', flexShrink: 0 }}>🔪</div>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)', marginBottom: '3px' }}>{lobby.creatorName}</div>
@@ -905,18 +1060,8 @@ export default function SliceDuel() {
                       {!wallet ? (
                         <WalletMultiButton style={{ height: '40px', borderRadius: '8px', fontSize: '12px', padding: '0 12px', flexShrink: 0 }} />
                       ) : (
-                        <button
-                          onClick={() => handleJoinLobby(lobby)}
-                          disabled={joinLoading === lobby.id}
-                          style={{
-                            padding: '10px 20px', borderRadius: '10px', border: 'none',
-                            background: joinLoading === lobby.id ? 'rgba(255,255,255,0.07)' : 'linear-gradient(135deg,#c53030,#e53e3e)',
-                            color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '13px',
-                            cursor: joinLoading === lobby.id ? 'not-allowed' : 'pointer',
-                            flexShrink: 0, letterSpacing: '0.04em',
-                            boxShadow: joinLoading !== lobby.id ? '0 3px 14px rgba(229,62,62,0.35)' : 'none',
-                          }}
-                        >
+                        <button onClick={() => handleJoinLobby(lobby)} disabled={!!joinLoading}
+                          style={{ height: '40px', padding: '0 18px', borderRadius: '10px', border: 'none', background: joinLoading === lobby.id ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg,#c53030,#e53e3e)', color: '#fff', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '13px', cursor: joinLoading ? 'not-allowed' : 'pointer', flexShrink: 0, transition: 'all 0.2s', boxShadow: joinLoading ? 'none' : '0 2px 12px rgba(229,62,62,0.4)' }}>
                           {joinLoading === lobby.id ? '⏳' : '⚔️ Match It'}
                         </button>
                       )}
@@ -930,143 +1075,76 @@ export default function SliceDuel() {
             {phase === 'lobby' && myLobby && (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px', animation: 'spin-jackpot 3s linear infinite', display: 'inline-block' }}>🔪</div>
+                  <div style={{ fontSize: '48px', marginBottom: '16px', display: 'inline-block' }}>🔪</div>
                   <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '20px', color: 'var(--text-primary)', marginBottom: '8px' }}>Lobby Live</div>
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Waiting for someone to match your ◎ {fmtSol(myLobby.wagerLamports)} wager…</div>
                 </div>
               </div>
             )}
 
-            {/* Game canvas area */}
-            {(phase === 'playing' || phase === 'countdown') && (
-              <div
-                style={{
-                  flex: 1, position: 'relative', overflow: 'hidden',
-                  background: 'radial-gradient(ellipse at center, #100a05 0%, #0a0500 100%)',
-                  cursor: phase === 'playing' ? 'crosshair' : 'default',
-                  userSelect: 'none',
-                }}
-                onMouseMove={handleMouseMove}
+            {/* ── CANVAS GAME AREA ── */}
+            <div ref={containerRef} style={{ flex: 1, position: 'relative', overflow: 'hidden', display: (phase === 'playing' || phase === 'countdown') ? 'block' : 'none' }}>
+
+              {/* Time bar */}
+              {phase === 'playing' && (
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: 'rgba(255,255,255,0.08)', zIndex: 5, pointerEvents: 'none' }}>
+                  <div style={{ height: '100%', width: `${(timeLeft / GAME_DURATION) * 100}%`, background: timeLeft > 20 ? 'linear-gradient(90deg,#e53e3e,#ff8c00)' : '#f87171', transition: 'width 0.2s linear, background 0.3s' }} />
+                </div>
+              )}
+
+              {/* Score HUD — canvas overlay via absolute divs */}
+              {(phase === 'playing') && (
+                <>
+                  <div style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 5, pointerEvents: 'none' }}>
+                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '32px', color: '#fc8181', lineHeight: 1, textShadow: '0 0 20px rgba(252,129,129,0.5)' }}>{score}</div>
+                    <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', fontFamily: 'var(--font-display)', fontWeight: 700 }}>YOUR SCORE</div>
+                  </div>
+                  <div style={{ position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)', zIndex: 5, textAlign: 'center', pointerEvents: 'none' }}>
+                    <div style={{ fontFamily: 'Space Mono, monospace', fontWeight: 700, fontSize: '20px', color: timeLeft <= 10 ? '#f87171' : 'rgba(255,255,255,0.7)', textShadow: timeLeft <= 10 ? '0 0 14px rgba(248,113,113,0.8)' : 'none' }}>{fmtTime(timeLeft)}</div>
+                  </div>
+                  <div style={{ position: 'absolute', top: '12px', right: '12px', zIndex: 5, textAlign: 'right', pointerEvents: 'none' }}>
+                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '32px', color: '#48bb78', lineHeight: 1, textShadow: '0 0 20px rgba(72,187,120,0.5)' }}>{opponentScore}</div>
+                    <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em', fontFamily: 'var(--font-display)', fontWeight: 700 }}>OPPONENT</div>
+                  </div>
+                  {combo >= 3 && (
+                    <div style={{ position: 'absolute', top: '70px', left: '50%', transform: 'translateX(-50%)', zIndex: 6, textAlign: 'center', pointerEvents: 'none' }}>
+                      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '20px', color: '#fbbf24', textShadow: '0 0 16px rgba(251,191,36,0.9)', animation: 'combo-pulse 0.4s ease-in-out infinite alternate' }}>
+                        🔥 {combo}× COMBO · 2× POINTS!
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <canvas
+                ref={canvasRef}
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: phase === 'playing' ? 'none' : 'default', touchAction: 'none' }}
                 onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
+                onTouchStart={handleTouchStart}
                 onTouchMove={handleTouchMove}
                 onTouchEnd={handleTouchEnd}
-              >
-                {/* Time bar */}
-                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: 'rgba(255,255,255,0.08)', zIndex: 5 }}>
-                  <div style={{
-                    height: '100%',
-                    width: `${(timeLeft / GAME_DURATION) * 100}%`,
-                    background: timeLeft > 20 ? 'linear-gradient(90deg,#e53e3e,#ff8c00)' : '#f87171',
-                    transition: 'width 1s linear, background 0.3s',
-                  }} />
-                </div>
-
-                {/* Score HUD */}
-                <div style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 5 }}>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '32px', color: '#fc8181', lineHeight: 1, textShadow: '0 0 20px rgba(252,129,129,0.5)' }}>{score}</div>
-                  <div style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.1em', fontFamily: 'var(--font-display)', fontWeight: 700 }}>YOUR SCORE</div>
-                </div>
-                <div style={{ position: 'absolute', top: '12px', right: '12px', zIndex: 5, textAlign: 'right' }}>
-                  <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '32px', color: '#48bb78', lineHeight: 1, textShadow: '0 0 20px rgba(72,187,120,0.5)' }}>{opponentScore}</div>
-                  <div style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.1em', fontFamily: 'var(--font-display)', fontWeight: 700 }}>OPPONENT</div>
-                </div>
-
-                {/* Timer center */}
-                <div style={{ position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)', zIndex: 5, textAlign: 'center' }}>
-                  <div style={{ fontFamily: 'Space Mono, monospace', fontWeight: 700, fontSize: '18px', color: timeLeft <= 10 ? '#f87171' : 'var(--text-secondary)' }}>{fmtTime(timeLeft)}</div>
-                </div>
-
-                {/* Combo display */}
-                {combo >= 3 && (
-                  <div style={{ position: 'absolute', top: '70px', left: '50%', transform: 'translateX(-50%)', zIndex: 6, textAlign: 'center', pointerEvents: 'none' }}>
-                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '20px', color: 'var(--orange-bright)', textShadow: '0 0 16px rgba(255,140,0,0.8)', animation: 'winner-flash 0.5s infinite' }}>
-                      🔥 {combo}× COMBO · 2× POINTS!
-                    </div>
-                  </div>
-                )}
-
-                {/* Slice trail */}
-                {sliceTrail.length > 1 && (
-                  <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 4 }}>
-                    <polyline
-                      points={sliceTrail.map(p => `${p.x}% ${p.y}%`).join(' ')}
-                      fill="none"
-                      stroke="rgba(255,220,100,0.7)"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                )}
-
-                {/* Fruits */}
-                {fruits.map(f => (
-                  <div
-                    key={f.id}
-                    style={{
-                      position: 'absolute',
-                      left: `${f.x}%`,
-                      top: `${f.y}%`,
-                      transform: 'translate(-50%, -50%)',
-                      fontSize: `${f.size}px`,
-                      lineHeight: 1,
-                      opacity: f.opacity,
-                      pointerEvents: 'none',
-                      transition: f.sliced ? 'none' : undefined,
-                      filter: f.sliced
-                        ? 'brightness(2) saturate(3)'
-                        : f.fruitIdx >= 0
-                        ? `drop-shadow(0 0 4px ${FRUITS[f.fruitIdx].color}99)`
-                        : 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))',
-                      zIndex: 3,
-                    }}
-                  >
-                    {f.fruitIdx === -1 ? BOMB_EMOJI : FRUITS[f.fruitIdx].emoji}
-                  </div>
-                ))}
-
-                {/* Instruction hint when playing */}
-                {phase === 'playing' && fruits.length === 0 && (
-                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '13px', color: 'rgba(255,255,255,0.2)', textAlign: 'center' }}>
-                      Hold & drag to slice
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+              />
+            </div>
           </div>
 
           {/* ── RIGHT PANEL: Fruit scoring guide ── */}
-          <div style={{
-            width: '200px', flexShrink: 0, borderLeft: '1px solid var(--border-color)',
-            background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', overflowY: 'auto',
-          }}>
+          <div style={{ width: '200px', flexShrink: 0, borderLeft: '1px solid var(--border-color)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
             <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--border-color)' }}>
               <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '11px', color: 'var(--text-muted)', letterSpacing: '0.1em' }}>FRUIT POINTS</div>
             </div>
             <div style={{ padding: '10px', flex: 1 }}>
               {FRUITS.map(f => (
-                <div key={f.name} style={{
-                  display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '8px 10px', marginBottom: '6px',
-                  background: 'var(--bg-card)', border: '1px solid var(--border-color)',
-                  borderRadius: '8px',
-                }}>
+                <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', marginBottom: '6px', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
                   <span style={{ fontSize: '20px' }}>{f.emoji}</span>
                   <span style={{ flex: 1, fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--font-display)', fontWeight: 600 }}>{f.name}</span>
                   <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '13px', color: f.color }}>+{f.points}</span>
                 </div>
               ))}
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '10px',
-                padding: '8px 10px', marginBottom: '6px',
-                background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
-                borderRadius: '8px',
-              }}>
-                <span style={{ fontSize: '20px' }}>{BOMB_EMOJI}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', marginBottom: '6px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '8px' }}>
+                <span style={{ fontSize: '20px' }}>💣</span>
                 <span style={{ flex: 1, fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--font-display)', fontWeight: 600 }}>Bomb</span>
                 <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '13px', color: '#f87171' }}>−5</span>
               </div>
@@ -1085,19 +1163,13 @@ export default function SliceDuel() {
       </div>
 
       {showSettings && wallet && (
-        <SettingsModal
-          wallet={wallet}
-          currentDisplayName={displayName}
-          socket={socket}
-          onClose={() => setShowSettings(false)}
-          onUsernameChanged={(name) => { setDisplayName(name); setShowSettings(false); }}
-        />
+        <SettingsModal wallet={wallet} currentDisplayName={displayName} socket={socket} onClose={() => setShowSettings(false)} onUsernameChanged={(name) => { setDisplayName(name); setShowSettings(false); }} />
       )}
 
       <style>{`
-        @keyframes winner-flash {
-          0%,100% { opacity: 1; }
-          50% { opacity: 0.6; }
+        @keyframes combo-pulse {
+          from { transform: translateX(-50%) scale(1); }
+          to   { transform: translateX(-50%) scale(1.08); }
         }
       `}</style>
     </>

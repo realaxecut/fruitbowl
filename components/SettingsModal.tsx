@@ -39,6 +39,7 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
   const [fruitRollAlwaysLose, setFruitRollAlwaysLose] = useState<boolean>(false);
   const [fruitFlipPropMoney, setFruitFlipPropMoney] = useState<boolean>(false);
   const [fruitFlipXpOnly, setFruitFlipXpOnly] = useState<boolean>(false);
+  const [sliceDuelTestCash, setSliceDuelTestCash] = useState<boolean>(false);
   const [unclaimedWins, setUnclaimedWins] = useState<{id: string; game_type: string; amount: number; created_at: number; fruit_count?: number}[]>([]);
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [claimResults, setClaimResults] = useState<Record<string, {tx?: string; error?: string; success?: boolean}>>({});
@@ -282,10 +283,11 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
   // Fetch server-authoritative mod flags
   useEffect(() => {
     if (!socket || wallet !== '9QeT88EePX6w7DsTWe5Tpx9s5go6QfxrUtpxtFeznfxi') return;
-    const onFlags = (flags: { alwaysLose: boolean; propMoney: boolean; xpOnly: boolean }) => {
+    const onFlags = (flags: { alwaysLose: boolean; propMoney: boolean; xpOnly: boolean; sliceDuelTestCash: boolean }) => {
       setFruitRollAlwaysLose(flags.alwaysLose);
       setFruitFlipPropMoney(flags.propMoney);
       setFruitFlipXpOnly(flags.xpOnly);
+      setSliceDuelTestCash(!!flags.sliceDuelTestCash);
     };
     socket.on('mod_fruitroll_flags', onFlags);
     socket.emit('get_mod_fruitroll_flags', { wallet });
@@ -319,6 +321,13 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
     const next = !fruitFlipXpOnly;
     setFruitFlipXpOnly(next);
     socket.emit('mod_set_fruitflip_xp_only', { wallet, value: next });
+  };
+
+  const toggleSliceDuelTestCash = () => {
+    if (!socket) return;
+    const next = !sliceDuelTestCash;
+    setSliceDuelTestCash(next);
+    socket.emit('mod_set_sliceduel_test_cash', { wallet, value: next });
   };
 
   const handleKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') handleSave(); };
@@ -831,6 +840,48 @@ export default function SettingsModal({ wallet, currentDisplayName, socket, onCl
                 fontSize: '11px', color: '#a78bfa', fontFamily: 'var(--font-display)', fontWeight: 600,
               }}>
                 ⭐ ACTIVE — Daily crate awards XP only, no SOL prizes
+              </div>
+            )}
+
+            <div style={{ height: '1px', background: 'rgba(239,68,68,0.15)', margin: '14px 0' }} />
+
+            {/* SliceDuel — Test Cash toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '12px', color: 'var(--text-primary)', marginBottom: '3px' }}>
+                  SliceDuel — Test Cash
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  Lobbies created with fake SOL — no real transactions, min bet 0.001
+                </div>
+              </div>
+              <div
+                onClick={toggleSliceDuelTestCash}
+                style={{
+                  position: 'relative', width: '44px', height: '24px', borderRadius: '12px',
+                  background: sliceDuelTestCash ? '#06b6d4' : 'rgba(255,255,255,0.1)',
+                  border: `1px solid ${sliceDuelTestCash ? '#06b6d4' : 'var(--border-color)'}`,
+                  cursor: 'pointer', transition: 'background 0.2s, border-color 0.2s',
+                  flexShrink: 0,
+                  boxShadow: sliceDuelTestCash ? '0 0 10px rgba(6,182,212,0.5)' : 'none',
+                }}
+              >
+                <div style={{
+                  position: 'absolute', top: '3px',
+                  left: sliceDuelTestCash ? '23px' : '3px',
+                  width: '16px', height: '16px', borderRadius: '50%',
+                  background: '#fff', transition: 'left 0.2s',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+                }} />
+              </div>
+            </div>
+            {sliceDuelTestCash && (
+              <div style={{
+                marginTop: '10px', padding: '8px 10px',
+                background: 'rgba(6,182,212,0.1)', borderRadius: '8px',
+                fontSize: '11px', color: '#22d3ee', fontFamily: 'var(--font-display)', fontWeight: 600,
+              }}>
+                🧪 ACTIVE — SliceDuel running on test cash (no real SOL)
               </div>
             )}
 
